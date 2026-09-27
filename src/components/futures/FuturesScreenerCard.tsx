@@ -66,7 +66,7 @@ export function FuturesScreenerCard({
   }, [tickers, heldSymbols])
 
   return (
-    <div className="rounded-xl border border-border/40 bg-card overflow-hidden h-full">
+    <div className="rounded-xl border border-border/40 bg-card overflow-hidden shadow-xs">
       {/* Header */}
       <div className="flex items-center justify-between px-3 py-2 border-b border-border/40 bg-violet-500/5">
         <div className="flex items-center gap-2">
@@ -84,8 +84,8 @@ export function FuturesScreenerCard({
         <div className="text-right">Signal</div>
       </div>
 
-      {/* Ticker list */}
-      <div className="overflow-y-auto max-h-[600px] divide-y divide-border/20">
+      {/* Ticker list with responsive scrollable height */}
+      <div className="overflow-y-auto max-h-[280px] divide-y divide-border/20">
         {scoredTickers.map(t => {
           const isSelected = t.symbol === selectedSymbol
           const isHeld = heldSymbols.has(t.symbol)

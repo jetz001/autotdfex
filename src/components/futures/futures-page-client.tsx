@@ -546,22 +546,22 @@ export function FuturesPageClient() {
 
       {/* Main Grid */}
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-3">
-        {/* Left Column: Screener + Manual Order Form */}
+        {/* Left Column: Manual Order Form + Screener */}
         <div className="xl:col-span-1 flex flex-col gap-3">
-          <FuturesScreenerCard
-            tickers={tickers}
-            config={config}
-            positions={positions}
-            onSelectSymbol={setSelectedSymbol}
-            selectedSymbol={selectedSymbol}
-          />
-
           <FuturesOrderFormCard
             symbol={selectedSymbol}
             currentPrice={selectedPrice}
             config={config}
             ticker={selectedTicker}
             onOpenPosition={handleManualOpen}
+          />
+
+          <FuturesScreenerCard
+            tickers={tickers}
+            config={config}
+            positions={positions}
+            onSelectSymbol={setSelectedSymbol}
+            selectedSymbol={selectedSymbol}
           />
         </div>
 
