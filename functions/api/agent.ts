@@ -157,20 +157,46 @@ Respond ONLY with valid JSON:
     }
   }
 
-  // Heuristic fallback
+  // Heuristic Quant Rule Engine (Fallback when OpenRouter free tier hits daily limit)
+  const positionPnl = typeof body.pnlPercent === "number" ? body.pnlPercent : null;
   let fallbackAction = "HOLD";
-  if (aiScore >= 80 && rsi15m < 40) fallbackAction = "LONG";
-  else if (aiScore >= 80 && rsi15m > 65 && fundingRate > 0.0005) fallbackAction = "SHORT";
+  let fallbackReason = `[Quant Rule Engine] Score ${aiScore}/100, RSI ${rsi15m}: รอสัญญาณที่ชัดเจน`;
+  let fallbackConfidence = 50;
+
+  // 1. Position Close Rules (Take Profit / Cut Loss)
+  if (positionPnl !== null) {
+    if (positionPnl >= 3.5) {
+      fallbackAction = "CLOSE_PROFIT";
+      fallbackReason = `[Quant Auto-TP] Position PnL +${positionPnl.toFixed(2)}% >= +3.5%: ถึงเป้าหมาย ทำกำไรทันที`;
+      fallbackConfidence = 95;
+    } else if (positionPnl <= -5.0) {
+      fallbackAction = "CUT_LOSS";
+      fallbackReason = `[Quant Auto-SL] Position PnL ${positionPnl.toFixed(2)}% <= -5.0%: ถึงจุดตัดขาดทุน รักษาเงินต้น`;
+      fallbackConfidence = 95;
+    }
+  }
+  // 2. Open SHORT Signal (Overbought / Dip from peak / High positive change)
+  else if (aiScore >= 75 && (rsi15m >= 62 || (change24h >= 5 && rsi15m >= 55))) {
+    fallbackAction = "SHORT";
+    fallbackReason = `[Quant Rule Engine] Overbought Signal: Score ${aiScore}/100, RSI 15m ${rsi15m}, 24h Change +${change24h}% — เปิด SHORT ดักย่อ`;
+    fallbackConfidence = 85;
+  }
+  // 3. Open LONG Signal (Dip in Uptrend)
+  else if (aiScore >= 75 && rsi15m <= 45 && change24h > 0) {
+    fallbackAction = "LONG";
+    fallbackReason = `[Quant Rule Engine] Dip in Uptrend: Score ${aiScore}/100, RSI 15m ${rsi15m}, 24h Change +${change24h}% — เปิด LONG ตามเทรนด์`;
+    fallbackConfidence = 85;
+  }
 
   return Response.json(
     {
       code: "00000",
-      msg: "fallback_heuristic",
+      msg: "quant_rule_engine",
       data: {
         action: fallbackAction,
-        confidence: fallbackAction !== "HOLD" ? 78 : 50,
-        reason: `[Quant Fallback] Score ${aiScore}/100, RSI ${rsi15m}: ${fallbackAction !== "HOLD" ? "สัญญาณเปิด Position" : "รอสัญญาณชัดขึ้น"}`,
-        modelUsed: "heuristic_quant",
+        confidence: fallbackConfidence,
+        reason: fallbackReason,
+        modelUsed: "heuristic_quant_engine",
         symbol,
         price: currentPrice,
       },
