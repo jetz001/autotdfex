@@ -52,7 +52,7 @@ export function FuturesScreenerCard({
       if (rsi > 70) shortScore += 15
       else if (rsi > 65) shortScore += 8
 
-      const bestScore = Math.max(longScore, shortScore)
+      const bestScore = Math.min(99, Math.max(longScore, shortScore))
       const signal = bestScore >= 80 ? (longScore >= shortScore ? 'LONG' : 'SHORT') : 'WATCH'
 
       return {
