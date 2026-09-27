@@ -128,7 +128,11 @@ Respond ONLY with valid JSON:
         }),
       });
 
-      if (!res.ok) { lastError = new Error(`HTTP ${res.status}`); continue; }
+      if (!res.ok) {
+        const errBody = await res.text();
+        lastError = new Error(`HTTP ${res.status}: ${errBody}`);
+        continue;
+      }
 
       const data = (await res.json()) as any;
       const content = data.choices?.[0]?.message?.content;
@@ -199,6 +203,7 @@ Respond ONLY with valid JSON:
         modelUsed: "heuristic_quant_engine",
         symbol,
         price: currentPrice,
+        openRouterDiagnostic: lastError ? lastError.message : "all_models_attempted",
       },
     },
     { headers: corsHeaders }
