@@ -77,8 +77,9 @@ export function FuturesScreenerCard({
       </div>
 
       {/* Column headers */}
-      <div className="grid grid-cols-5 gap-1 px-3 py-1.5 text-[10px] text-muted-foreground font-medium border-b border-border/30">
+      <div className="grid grid-cols-6 gap-1 px-3 py-1.5 text-[10px] text-muted-foreground font-medium border-b border-border/30">
         <div className="col-span-2">Symbol</div>
+        <div className="text-center font-semibold text-violet-400">Score</div>
         <div className="text-right">RSI</div>
         <div className="text-right">24h</div>
         <div className="text-right">Signal</div>
@@ -96,7 +97,7 @@ export function FuturesScreenerCard({
           return (
             <div
               key={t.symbol}
-              className={`grid grid-cols-5 gap-1 px-3 py-2 text-[11px] cursor-pointer transition-colors ${
+              className={`grid grid-cols-6 gap-1 px-3 py-2 text-[11px] cursor-pointer transition-colors ${
                 isSelected ? 'bg-violet-500/10' : 'hover:bg-muted/40'
               }`}
               onClick={() => onSelectSymbol(t.symbol)}
@@ -108,6 +109,23 @@ export function FuturesScreenerCard({
                   <div className="text-[9px] text-muted-foreground">${t.lastPr.toLocaleString()}</div>
                 </div>
               </div>
+
+              {/* AI Quant Score Column */}
+              <div className="flex items-center justify-center">
+                <span
+                  className={`text-[10px] font-mono font-bold px-1.5 py-0.5 rounded ${
+                    t.aiScore >= 85
+                      ? 'bg-violet-500/20 text-violet-300 border border-violet-500/30'
+                      : t.aiScore >= 70
+                      ? 'bg-blue-500/20 text-blue-300 border border-blue-500/30'
+                      : 'bg-muted text-muted-foreground'
+                  }`}
+                  title={`AI Multi-Factor Score: ${t.aiScore}/100`}
+                >
+                  {t.aiScore}
+                </span>
+              </div>
+
               <div className={`text-right font-mono ${rsiColor}`}>{rsi.toFixed(0)}</div>
               <div className={`text-right font-mono ${changeColor}`}>
                 {t.change24h >= 0 ? '+' : ''}{t.change24h.toFixed(2)}%
