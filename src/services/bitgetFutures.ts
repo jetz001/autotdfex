@@ -856,8 +856,14 @@ export async function fetchRealFuturesPositions(config?: FuturesConfig): Promise
  * contracts = floor((usdtBudget * leverage) / price)
  */
 export function calculateContracts(usdtBudget: number, price: number, leverage: number): number {
-  if (price <= 0) return 0;
-  return Math.floor((usdtBudget * leverage) / price);
+  if (price <= 0 || usdtBudget <= 0) return 0;
+  const notional = usdtBudget * leverage;
+  const raw = notional / price;
+  if (raw >= 100) return Math.floor(raw);
+  if (raw >= 10) return parseFloat(raw.toFixed(1));
+  if (raw >= 1) return parseFloat(raw.toFixed(2));
+  if (raw >= 0.1) return parseFloat(raw.toFixed(3));
+  return Math.max(0.0001, parseFloat(raw.toFixed(4)));
 }
 
 export async function executeFuturesOpenPosition(

@@ -28,21 +28,22 @@ export function FuturesOrderFormCard({
   const [usdtAmount, setUsdtAmount] = React.useState("10")
   const [loading, setLoading] = React.useState(false)
 
+  const effectivePrice = currentPrice > 0 ? currentPrice : ticker?.lastPr || 0
   const budget = parseFloat(usdtAmount) || 10
   const leverage = config.leverage || 5
-  const contracts = calculateContracts(budget, currentPrice, leverage)
-  const notional = contracts * currentPrice
+  const contracts = calculateContracts(budget, effectivePrice, leverage)
+  const notional = contracts * effectivePrice
 
   // Estimated TP & SL
   const tpPct = config.takeProfitPercent || 3.5
   const slPct = config.cutLossPercent || 5.0
-  const estLongTp = currentPrice * (1 + tpPct / 100)
-  const estLongSl = currentPrice * (1 - slPct / 100)
-  const estShortTp = currentPrice * (1 - tpPct / 100)
-  const estShortSl = currentPrice * (1 + slPct / 100)
+  const estLongTp = effectivePrice * (1 + tpPct / 100)
+  const estLongSl = effectivePrice * (1 - slPct / 100)
+  const estShortTp = effectivePrice * (1 - tpPct / 100)
+  const estShortSl = effectivePrice * (1 + slPct / 100)
 
   const handleTrade = async (side: "long" | "short") => {
-    if (budget < 5 || contracts <= 0 || loading || disabled) return
+    if (budget < 5 || contracts <= 0 || loading || disabled || effectivePrice <= 0) return
     try {
       setLoading(true)
       await onOpenPosition(side, budget)
