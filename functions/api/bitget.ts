@@ -1,7 +1,5 @@
 // Cloudflare Pages Function: Bitget USDT-M Perpetual Futures Proxy
-// Provides server-side authenticated requests to Bitget Futures API
-
-import crypto from "node:crypto";
+// Built with native Web Crypto API (crypto.subtle) - 100% native Edge compatible, zero node modules
 
 const BITGET_HOST = "https://api.bitget.com";
 const PRODUCT_TYPE = "USDT-FUTURES";
@@ -20,16 +18,28 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "Content-Type, x-bitget-key, x-bitget-secret, x-bitget-passphrase",
 };
 
-function signBitgetRequest(
+async function signBitgetRequest(
   timestamp: string,
   method: string,
   requestPath: string,
   queryString: string,
   body: string,
   secretKey: string
-) {
-  const prehash = timestamp + method.toUpperCase() + requestPath + (queryString ? `?${queryString}` : "") + (body || "");
-  return crypto.createHmac("sha256", secretKey).update(prehash).digest("base64");
+): Promise<string> {
+  const message = timestamp + method.toUpperCase() + requestPath + (queryString ? `?${queryString}` : "") + (body || "");
+  const encoder = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(secretKey),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const signature = await crypto.subtle.sign("HMAC", key, encoder.encode(message));
+  const bytes = new Uint8Array(signature);
+  let binary = "";
+  for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary);
 }
 
 async function getCredentials(req: Request, env: Env) {
@@ -94,7 +104,7 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
     }
 
     const timestamp = Date.now().toString();
-    const sign = signBitgetRequest(timestamp, "GET", requestPath, queryString, "", secretKey);
+    const sign = await signBitgetRequest(timestamp, "GET", requestPath, queryString, "", secretKey);
 
     const res = await fetch(`${BITGET_HOST}${requestPath}?${queryString}`, {
       headers: {
@@ -141,7 +151,7 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
 
     const bodyStr = JSON.stringify(payload);
     const timestamp = Date.now().toString();
-    const sign = signBitgetRequest(timestamp, "POST", requestPath, "", bodyStr, secretKey);
+    const sign = await signBitgetRequest(timestamp, "POST", requestPath, "", bodyStr, secretKey);
 
     const res = await fetch(`${BITGET_HOST}${requestPath}`, {
       method: "POST",
