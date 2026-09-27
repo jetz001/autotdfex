@@ -143,6 +143,121 @@ export function setPaperFuturesBalance(amt: number) {
   }
 }
 
+export function resetPaperFuturesBalance(amt = 10000) {
+  setPaperFuturesBalance(amt);
+  return amt;
+}
+
+// ──────────────────────────────────────
+// Real Bitget Futures Wallet Account
+// ──────────────────────────────────────
+
+export interface RealFuturesAccount {
+  connected: boolean;
+  marginCoin: string;
+  availableUsdt: number;
+  equityUsdt: number;
+  lockedUsdt: number;
+  unrealizedPnl: number;
+  bonus: number;
+  message?: string;
+}
+
+export async function fetchRealFuturesAccount(config?: FuturesConfig): Promise<RealFuturesAccount> {
+  const defaultRes: RealFuturesAccount = {
+    connected: false,
+    marginCoin: 'USDT',
+    availableUsdt: 0,
+    equityUsdt: 0,
+    lockedUsdt: 0,
+    unrealizedPnl: 0,
+    bonus: 0,
+    message: 'ยังไม่ได้เชื่อมต่อ Bitget API',
+  };
+
+  let activeConfig = config;
+  if (!activeConfig?.apiKey || !activeConfig?.secretKey) {
+    const synced = await syncFuturesConfigFromCloudflare();
+    if (synced?.apiKey) {
+      activeConfig = { ...(config || loadFuturesConfig()), ...synced } as FuturesConfig;
+    }
+  }
+
+  if (!activeConfig?.apiKey || !activeConfig?.secretKey || !activeConfig?.passphrase) {
+    return defaultRes;
+  }
+
+  // 1. Direct WebCrypto API call
+  try {
+    const timestamp = Date.now().toString();
+    const requestPath = '/api/v2/mix/account/accounts';
+    const queryString = `productType=${PRODUCT_TYPE}`;
+    const sign = await signBitgetRequest(timestamp, 'GET', requestPath, queryString, '', activeConfig.secretKey);
+
+    const res = await fetch(`${BITGET_HOST}${requestPath}?${queryString}`, {
+      headers: {
+        'ACCESS-KEY': activeConfig.apiKey,
+        'ACCESS-SIGN': sign,
+        'ACCESS-TIMESTAMP': timestamp,
+        'ACCESS-PASSPHRASE': activeConfig.passphrase,
+        'Content-Type': 'application/json',
+        locale: 'en-US',
+      },
+    });
+
+    const json = await res.json();
+    if (json.code === '00000' && Array.isArray(json.data)) {
+      const usdtAcc = json.data.find((a: any) => a.marginCoin === 'USDT') || json.data[0];
+      if (usdtAcc) {
+        return {
+          connected: true,
+          marginCoin: usdtAcc.marginCoin || 'USDT',
+          availableUsdt: parseFloat(usdtAcc.available || usdtAcc.maxOpenPosAvailable || '0'),
+          equityUsdt: parseFloat(usdtAcc.equity || usdtAcc.usdtEquity || '0'),
+          lockedUsdt: parseFloat(usdtAcc.locked || '0'),
+          unrealizedPnl: parseFloat(usdtAcc.unrealizedPL || '0'),
+          bonus: parseFloat(usdtAcc.bonus || '0'),
+          message: '✓ เชื่อมต่อกระเป๋า Bitget USDT-M Futures จริงสำเร็จ',
+        };
+      }
+    } else if (json.msg) {
+      defaultRes.message = `Bitget API (${json.code}): ${json.msg}`;
+    }
+  } catch (err: any) {
+    console.warn('Direct fetchRealFuturesAccount error, falling back to proxy:', err);
+  }
+
+  // 2. Fallback via Cloudflare Pages Function proxy
+  try {
+    const headers: Record<string, string> = {};
+    if (activeConfig.apiKey) headers['x-bitget-key'] = activeConfig.apiKey;
+    if (activeConfig.secretKey) headers['x-bitget-secret'] = activeConfig.secretKey;
+    if (activeConfig.passphrase) headers['x-bitget-passphrase'] = activeConfig.passphrase;
+
+    const pRes = await fetch('/api/bitget?action=balance', { headers });
+    if (pRes.ok) {
+      const pJson = await pRes.json();
+      if (pJson.code === '00000' && Array.isArray(pJson.data)) {
+        const usdtAcc = pJson.data.find((a: any) => a.marginCoin === 'USDT') || pJson.data[0];
+        if (usdtAcc) {
+          return {
+            connected: true,
+            marginCoin: usdtAcc.marginCoin || 'USDT',
+            availableUsdt: parseFloat(usdtAcc.available || usdtAcc.maxOpenPosAvailable || '0'),
+            equityUsdt: parseFloat(usdtAcc.equity || usdtAcc.usdtEquity || '0'),
+            lockedUsdt: parseFloat(usdtAcc.locked || '0'),
+            unrealizedPnl: parseFloat(usdtAcc.unrealizedPL || '0'),
+            bonus: parseFloat(usdtAcc.bonus || '0'),
+            message: '✓ เชื่อมต่อกระเป๋า Bitget USDT-M Futures จริงสำเร็จ (Proxy)',
+          };
+        }
+      }
+    }
+  } catch {}
+
+  return defaultRes;
+}
+
 // ──────────────────────────────────────
 // Cooldown Management
 // ──────────────────────────────────────
