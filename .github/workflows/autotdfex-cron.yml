@@ -1,0 +1,42 @@
+name: autoTDFex Futures Cloud Trader 24/7
+
+on:
+  schedule:
+    # Every 15 minutes — 24/7 autonomous futures cycle
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Action: cycle | futures_open_long | futures_open_short | futures_close_long | futures_close_short'
+        required: false
+        default: 'cycle'
+      symbol:
+        description: 'Symbol (e.g. BTCUSDT)'
+        required: false
+        default: ''
+      amount:
+        description: 'Amount in USDT margin'
+        required: false
+        default: '10'
+
+jobs:
+  futures-trader:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      INPUT_ACTION: ${{ github.event.inputs.action || 'cycle' }}
+      INPUT_SYMBOL: ${{ github.event.inputs.symbol || '' }}
+      INPUT_AMOUNT: ${{ github.event.inputs.amount || '10' }}
+
+    steps:
+      - name: Checkout autoTDFex
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Run autoTDFex Futures Cloud Trader
+        run: node scripts/cloud-futures-trader.js
