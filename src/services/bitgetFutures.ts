@@ -381,9 +381,30 @@ export async function syncFuturesConfigFromCloudflare(): Promise<SyncedCloudFutu
     const res = await fetch('/api/config');
     if (res.ok) {
       const json = await res.json();
-      if (json.code === '00000' && json.data) return json.data as SyncedCloudFuturesData;
+      if (json.code === '00000' && json.data) {
+        if (json.data.apiKey && json.data.secretKey) {
+          return json.data as SyncedCloudFuturesData;
+        }
+      }
     }
   } catch {}
+
+  // Fallback: inherit credentials from AutoTD Spot Cloudflare Pages
+  try {
+    const fallbackRes = await fetch('https://autotd.pages.dev/api/config');
+    if (fallbackRes.ok) {
+      const fj = await fallbackRes.json();
+      if (fj.code === '00000' && fj.data?.apiKey) {
+        return {
+          apiKey: fj.data.apiKey,
+          secretKey: fj.data.secretKey,
+          passphrase: fj.data.passphrase,
+          openrouterApiKey: fj.data.openrouterApiKey,
+        } as SyncedCloudFuturesData;
+      }
+    }
+  } catch {}
+
   return null;
 }
 

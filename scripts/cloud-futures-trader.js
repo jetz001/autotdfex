@@ -122,6 +122,32 @@ async function runFuturesCycle() {
   } catch (err) { console.error('Failed to load cloud config:', err.message); }
 
   if (!config || !config.apiKey || !config.secretKey || !config.passphrase) {
+    try {
+      console.log('Fetching fallback credentials from AutoTD cloud config (https://autotd.pages.dev/api/config)...');
+      const fallbackRes = await fetch('https://autotd.pages.dev/api/config');
+      if (fallbackRes.ok) {
+        const fj = await fallbackRes.json();
+        if (fj?.data?.apiKey && fj?.data?.secretKey) {
+          config = {
+            ...(config || {}),
+            apiKey: fj.data.apiKey,
+            secretKey: fj.data.secretKey,
+            passphrase: fj.data.passphrase,
+            openrouterApiKey: fj.data.openrouterApiKey || config?.openrouterApiKey || '',
+            leverage: config?.leverage || 5,
+            takeProfitPercent: config?.takeProfitPercent || 3.5,
+            cutLossPercent: config?.cutLossPercent || 5.0,
+            maxCoins: config?.maxCoins || 4,
+          };
+          console.log('✓ Successfully inherited Bitget API credentials from AutoTD');
+        }
+      }
+    } catch (fbErr) {
+      console.warn('Fallback config fetch error:', fbErr.message);
+    }
+  }
+
+  if (!config || !config.apiKey || !config.secretKey || !config.passphrase) {
     console.error('Bitget API credentials not configured. Exiting.');
     return;
   }

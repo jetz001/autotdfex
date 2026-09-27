@@ -2,11 +2,13 @@ name = "autotdfex"
 compatibility_date = "2024-12-01"
 pages_build_output_dir = "out"
 
+# ใช้ KV + D1 เดิมของ AutoTD ร่วมกัน — ไม่ต้องสร้างใหม่
+# Shared config: Bitget API keys, OpenRouter key, settings sync ข้าม device
 [[kv_namespaces]]
-binding = "AUTOTDFEX_KV"
-id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
+binding = "AUTOTD_KV"
+id = "bb8e501311f8491baf0827b635bd3ad8"
 
 [[d1_databases]]
 binding = "DB"
-database_name = "autotdfex-db"
-database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+database_name = "autotd-db"
+database_id = "fb9b0c44-a7ba-4119-b1a5-eb056f756b3a"

@@ -3,10 +3,10 @@
 
 interface Env {
   GITHUB_TOKEN?: string;
-  AUTOTDFEX_KV?: KVNamespace;
+  AUTOTD_KV?: KVNamespace;
 }
 
-const GITHUB_REPO = "jetz001/autoTDFex";
+const GITHUB_REPO = "jetz001/autotdfex";
 const WORKFLOW_ID = "autotdfex-cron.yml";
 
 const corsHeaders = {
