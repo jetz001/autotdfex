@@ -98,9 +98,12 @@ export function FuturesPageClient() {
               saveFuturesPositions(realPositions, false)
             }
           })
-          refreshRealAccount(merged)
         } else {
           setPositions(loadFuturesPositions(isPaper))
+        }
+
+        if (merged.apiKey) {
+          refreshRealAccount(merged)
         }
 
         if (synced.paperBalance !== undefined) {

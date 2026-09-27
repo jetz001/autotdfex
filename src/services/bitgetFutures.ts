@@ -104,7 +104,10 @@ export function loadFuturesConfig(): FuturesConfig {
     marginMode: 'crossed',
   };
   if (typeof window === 'undefined') return defaults;
-  const saved = localStorage.getItem(STORAGE_KEY_CONFIG);
+  let saved = localStorage.getItem(STORAGE_KEY_CONFIG);
+  if (!saved) {
+    saved = localStorage.getItem('bitget_spot_config_v1') || localStorage.getItem('bitget_config_v1');
+  }
   if (saved) {
     try { return { ...defaults, ...JSON.parse(saved) }; } catch {}
   }
@@ -163,6 +166,109 @@ export interface RealFuturesAccount {
   message?: string;
 }
 
+export async function fetchRealFuturesAccountViaWs(config: FuturesConfig): Promise<RealFuturesAccount | null> {
+  if (typeof window === 'undefined' || typeof WebSocket === 'undefined') return null;
+  if (!config.apiKey || !config.secretKey || !config.passphrase) return null;
+
+  return new Promise((resolve) => {
+    let resolved = false;
+    let ws: WebSocket | null = null;
+    const timeout = setTimeout(() => {
+      if (!resolved) {
+        resolved = true;
+        try { ws?.close(); } catch {}
+        resolve(null);
+      }
+    }, 4500);
+
+    try {
+      ws = new WebSocket('wss://ws.bitget.com/v2/ws/private');
+
+      ws.onopen = async () => {
+        try {
+          const timestamp = Math.floor(Date.now() / 1000).toString();
+          const sign = await signBitgetRequest(timestamp, 'GET', '/user/verify', '', '', config.secretKey);
+          ws?.send(
+            JSON.stringify({
+              op: 'login',
+              args: [
+                {
+                  apiKey: config.apiKey,
+                  passphrase: config.passphrase,
+                  timestamp,
+                  sign,
+                },
+              ],
+            })
+          );
+        } catch {
+          if (!resolved) {
+            resolved = true;
+            clearTimeout(timeout);
+            try { ws?.close(); } catch {}
+            resolve(null);
+          }
+        }
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.event === 'login' && msg.code === 0) {
+            ws?.send(
+              JSON.stringify({
+                op: 'subscribe',
+                args: [{ instType: 'USDT-FUTURES', channel: 'account', coin: 'default' }],
+              })
+            );
+          } else if (msg.action === 'snapshot' && Array.isArray(msg.data)) {
+            if (!resolved) {
+              resolved = true;
+              clearTimeout(timeout);
+              try { ws?.close(); } catch {}
+
+              const usdtAcc = msg.data.find((a: any) => a.marginCoin === 'USDT') || msg.data[0];
+              if (usdtAcc) {
+                const avail = parseFloat(usdtAcc.available || usdtAcc.maxOpenPosAvailable || '0');
+                const eq = parseFloat(usdtAcc.equity || usdtAcc.usdtEquity || '0');
+                const frozen = parseFloat(usdtAcc.frozen || '0');
+                const unPnl = parseFloat(usdtAcc.unrealizedPL || '0');
+                resolve({
+                  connected: true,
+                  marginCoin: 'USDT',
+                  availableUsdt: avail,
+                  equityUsdt: eq,
+                  lockedUsdt: frozen,
+                  unrealizedPnl: unPnl,
+                  bonus: 0,
+                  message: `✓ เชื่อมต่อกระเป๋า Bitget USDT-M Futures จริงสำเร็จ (พร้อมเทรด $${avail.toFixed(2)} USDT)`,
+                });
+              } else {
+                resolve(null);
+              }
+            }
+          }
+        } catch {}
+      };
+
+      ws.onerror = () => {
+        if (!resolved) {
+          resolved = true;
+          clearTimeout(timeout);
+          try { ws?.close(); } catch {}
+          resolve(null);
+        }
+      };
+    } catch {
+      if (!resolved) {
+        resolved = true;
+        clearTimeout(timeout);
+        resolve(null);
+      }
+    }
+  });
+}
+
 export async function fetchRealFuturesAccount(config?: FuturesConfig): Promise<RealFuturesAccount> {
   const defaultRes: RealFuturesAccount = {
     connected: false,
@@ -180,6 +286,7 @@ export async function fetchRealFuturesAccount(config?: FuturesConfig): Promise<R
     const synced = await syncFuturesConfigFromCloudflare();
     if (synced?.apiKey) {
       activeConfig = { ...(config || loadFuturesConfig()), ...synced } as FuturesConfig;
+      saveFuturesConfig(activeConfig);
     }
   }
 
@@ -187,7 +294,15 @@ export async function fetchRealFuturesAccount(config?: FuturesConfig): Promise<R
     return defaultRes;
   }
 
-  // 1. Direct WebCrypto API call
+  // 1. WebSocket Live Stream (Priority 1 — 100% bypasses CORS & WAF in browser)
+  try {
+    const wsRes = await fetchRealFuturesAccountViaWs(activeConfig);
+    if (wsRes && wsRes.connected) return wsRes;
+  } catch (wsErr) {
+    console.warn('WS balance fetch failed, falling back to REST:', wsErr);
+  }
+
+  // 2. Direct WebCrypto API call
   try {
     const timestamp = Date.now().toString();
     const requestPath = '/api/v2/mix/account/accounts';
@@ -227,7 +342,7 @@ export async function fetchRealFuturesAccount(config?: FuturesConfig): Promise<R
     console.warn('Direct fetchRealFuturesAccount error, falling back to proxy:', err);
   }
 
-  // 2. Fallback via Cloudflare Pages Function proxy
+  // 3. Fallback via Cloudflare Pages Function proxy
   try {
     const headers: Record<string, string> = {};
     if (activeConfig.apiKey) headers['x-bitget-key'] = activeConfig.apiKey;
@@ -370,7 +485,7 @@ export async function fetchTopBitgetFuturesTickers(): Promise<FuturesTickerItem[
 
 export async function fetchBitgetFuturesCandles(
   symbol: string,
-  granularity = '15min',
+  granularity = '15m',
   limit = 100
 ) {
   try {
@@ -426,7 +541,7 @@ export async function fetchRealRsi15m(symbol: string): Promise<number> {
   const cached = rsiCache[symbol];
   if (cached && Date.now() - cached.timestamp < 60000) return cached.rsi;
   try {
-    const candles = await fetchBitgetFuturesCandles(symbol, '15min', 30);
+    const candles = await fetchBitgetFuturesCandles(symbol, '15m', 30);
     if (candles && candles.length >= 15) {
       const closes = candles.map(c => c.close);
       const rsi = calculateRSI(closes, 14);

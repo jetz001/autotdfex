@@ -22,12 +22,12 @@ interface Props {
 }
 
 const TIMEFRAMES = [
-  { label: "1m", bitget: "1min", tv: "1" },
-  { label: "5m", bitget: "5min", tv: "5" },
-  { label: "15m", bitget: "15min", tv: "15" },
-  { label: "1H", bitget: "1h", tv: "60" },
-  { label: "4H", bitget: "4h", tv: "240" },
-  { label: "1D", bitget: "1day", tv: "D" },
+  { label: "1m", bitget: "1m", tv: "1" },
+  { label: "5m", bitget: "5m", tv: "5" },
+  { label: "15m", bitget: "15m", tv: "15" },
+  { label: "1H", bitget: "1H", tv: "60" },
+  { label: "4H", bitget: "4H", tv: "240" },
+  { label: "1D", bitget: "1D", tv: "D" },
 ]
 
 export function FuturesTradingChart({ symbol, currentPrice, position, ticker }: Props) {
