@@ -102,11 +102,17 @@ export function loadQuantLogs(isPaper = true): Array<{ id: string; time: string;
 export function saveQuantLogs(logs: Array<{ id: string; time: string; action: string; symbol: string; note: string; color: string }>, isPaper = true) {
   if (typeof window !== 'undefined') {
     const key = isPaper ? STORAGE_KEY_PAPER_LOGS : STORAGE_KEY_LIVE_LOGS;
-    const sliced = logs.slice(0, 20);
+    const sliced = logs.slice(0, 30);
     localStorage.setItem(key, JSON.stringify(sliced));
     if (isPaper) {
       localStorage.setItem(STORAGE_KEY_QUANT_LOGS, JSON.stringify(sliced));
     }
+    // Asynchronously push to Cloudflare D1 via /api/config so all devices/browsers/tabs are 100% synced!
+    fetch('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(isPaper ? { quantLogs: sliced } : { liveLogs: sliced, liveQuantLogs: sliced }),
+    }).catch(() => {});
   }
 }
 

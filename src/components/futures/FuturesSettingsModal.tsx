@@ -129,10 +129,19 @@ export function FuturesSettingsModal({ open, onOpenChange, config, onSave }: Fut
             </Field>
           </div>
 
-          {/* OpenRouter */}
-          <Field label="OpenRouter API Key (สำหรับ AI Agent ฟรี)">
-            <Input value={form.openrouterApiKey || ''} onChange={set('openrouterApiKey')} placeholder="sk-or-..." />
-          </Field>
+          {/* AI Agent Keys */}
+          <div className="flex flex-col gap-2">
+            <div className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground flex items-center justify-between">
+              <span>AI Agent Brain (High-Speed LPU Inference)</span>
+              <span className="text-[9px] text-emerald-400 font-semibold">⚡ Tier 1: Groq (แนะนำ)</span>
+            </div>
+            <Field label="Groq API Key (แนะนำหลัก — คำนวณเร็วระดับเสี้ยววินาที ฟรี)">
+              <Input value={form.groqApiKey || ''} onChange={set('groqApiKey')} placeholder="gsk_..." />
+            </Field>
+            <Field label="OpenRouter API Key (Tier 2 สำรอง)">
+              <Input value={form.openrouterApiKey || ''} onChange={set('openrouterApiKey')} placeholder="sk-or-..." />
+            </Field>
+          </div>
 
           {/* Futures Parameters */}
           <div className="flex flex-col gap-2">

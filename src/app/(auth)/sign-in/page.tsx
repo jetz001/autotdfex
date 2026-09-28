@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useEffect } from "react"
 import Image from "next/image"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
@@ -8,16 +8,14 @@ import { motion } from "motion/react"
 import {
   TrendingUpIcon,
   Loader2Icon,
-  CheckIcon,
   ShieldCheckIcon,
   SparklesIcon,
-  ZapIcon,
   ArrowRightIcon,
+  AlertCircleIcon,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import dynamic from "next/dynamic"
 import { useAuth } from "@/context/AuthContext"
-import { OPERATOR_EMAIL } from "@/lib/auth"
 
 const GlobeDemo = dynamic(() => import("@/components/globe-demo"), {
   ssr: false,
@@ -45,39 +43,18 @@ const itemVariants = {
 
 export default function SignInPage() {
   const router = useRouter()
-  const { user, loginWithGoogle } = useAuth()
+  const { user, loading, authError, loginWithGoogle } = useAuth()
 
-  const [isGoogleLoading, setIsGoogleLoading] = useState(false)
-  const [isSuccess, setIsSuccess] = useState(false)
-  const [statusMsg, setStatusMsg] = useState("")
-
-  // Auto-redirect if already logged in
+  // Auto-redirect ถ้า login อยู่แล้ว
   useEffect(() => {
-    if (user && user.authenticated) {
+    if (!loading && user && user.authenticated) {
       router.replace("/futures")
     }
-  }, [user, router])
-
-  const handleGoogleSignIn = async () => {
-    setIsGoogleLoading(true)
-    setStatusMsg("Authenticating with Google OAuth...")
-    try {
-      await loginWithGoogle(OPERATOR_EMAIL)
-      setIsSuccess(true)
-      setStatusMsg("Google Auth Verified: " + OPERATOR_EMAIL)
-      setTimeout(() => {
-        router.push("/futures")
-      }, 600)
-    } catch (err) {
-      console.error(err)
-      setIsGoogleLoading(false)
-      setStatusMsg("Failed to authenticate with Google")
-    }
-  }
+  }, [user, loading, router])
 
   return (
     <div className="flex min-h-svh">
-      {/* Left panel - 3D Globe (AutoTD style) */}
+      {/* Left panel - 3D Globe */}
       <div className="relative hidden w-1/2 flex-col justify-between bg-zinc-950 lg:flex overflow-hidden border-r border-violet-900/20">
         {/* Ambient background glow */}
         <div className="absolute top-1/4 left-1/2 -translate-x-1/2 w-96 h-96 bg-violet-600/15 rounded-full blur-3xl pointer-events-none" />
@@ -99,7 +76,7 @@ export default function SignInPage() {
               </span>
             </span>
             <span className="text-[11px] text-zinc-400">
-              Perpetual Quant Desk & Terminal
+              Perpetual Quant Desk &amp; Terminal
             </span>
           </div>
         </Link>
@@ -109,7 +86,7 @@ export default function SignInPage() {
           <GlobeDemo />
         </div>
 
-        {/* Quote overlay — pinned to bottom */}
+        {/* Quote overlay */}
         <div className="relative z-20 mt-auto p-8">
           <div className="rounded-xl border border-white/10 bg-black/40 p-6 backdrop-blur-md shadow-2xl">
             <div className="flex items-center gap-2 mb-2 text-violet-400">
@@ -132,9 +109,8 @@ export default function SignInPage() {
         </div>
       </div>
 
-      {/* Right panel - Google Auth Only */}
+      {/* Right panel - Google Auth */}
       <div className="flex flex-1 items-center justify-center bg-background px-6 py-12 relative overflow-hidden">
-        {/* Subtle background glow */}
         <div className="absolute -top-40 right-0 w-80 h-80 bg-violet-500/5 rounded-full blur-3xl pointer-events-none" />
 
         <motion.div
@@ -162,7 +138,8 @@ export default function SignInPage() {
               Welcome to autoTDFex
             </h1>
             <p className="mt-2 text-sm text-muted-foreground">
-              Sign in with your authorized Google account to enter the Bitget Futures desk
+              Sign in with your authorized Google account to enter the Bitget
+              Futures desk
             </p>
           </motion.div>
 
@@ -197,31 +174,38 @@ export default function SignInPage() {
                   <span>Jim War</span>
                   <ShieldCheckIcon className="size-3.5 text-emerald-400" />
                 </div>
-                <div className="text-xs text-muted-foreground truncate font-mono">
-                  {OPERATOR_EMAIL}
+                <div className="text-xs text-muted-foreground font-mono">
+                  Lead Quant Operator
                 </div>
               </div>
             </div>
           </motion.div>
 
-          {/* Google Auth Action Button */}
+          {/* Auth Error Alert */}
+          {authError && (
+            <motion.div
+              initial={{ opacity: 0, y: -4 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="mt-4 p-3 rounded-lg border border-red-500/30 bg-red-500/10 flex items-start gap-2"
+            >
+              <AlertCircleIcon className="size-4 text-red-400 shrink-0 mt-0.5" />
+              <p className="text-xs text-red-300 leading-relaxed">{authError}</p>
+            </motion.div>
+          )}
+
+          {/* Google Sign-In Button */}
           <motion.div className="mt-5" variants={itemVariants}>
             <Button
               type="button"
               size="lg"
               className="w-full h-12 bg-white hover:bg-zinc-100 text-zinc-900 border border-zinc-200 shadow-md font-semibold text-sm gap-3 transition-all active:scale-[0.99] cursor-pointer"
-              onClick={handleGoogleSignIn}
-              disabled={isGoogleLoading || isSuccess}
+              onClick={loginWithGoogle}
+              disabled={loading}
             >
-              {isGoogleLoading ? (
+              {loading ? (
                 <>
-                  <Loader2Icon className="size-4 animate-spin text-zinc-900" />
-                  <span>Connecting Google Auth...</span>
-                </>
-              ) : isSuccess ? (
-                <>
-                  <CheckIcon className="size-4 text-emerald-600 font-bold" />
-                  <span className="text-emerald-700">Verified! Entering Terminal...</span>
+                  <Loader2Icon className="size-4 animate-spin text-zinc-500" />
+                  <span className="text-zinc-500">กำลังตรวจสอบสถานะ...</span>
                 </>
               ) : (
                 <>
@@ -239,25 +223,14 @@ export default function SignInPage() {
             </Button>
           </motion.div>
 
-          {/* Status notification */}
-          {statusMsg && (
-            <motion.p
-              initial={{ opacity: 0, y: 4 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="mt-3 text-center text-xs font-medium text-emerald-400"
-            >
-              {statusMsg}
-            </motion.p>
-          )}
-
-          {/* Security & Access footnote */}
+          {/* Security footnote */}
           <motion.div
             className="mt-10 pt-6 border-t border-border/40 text-center space-y-2"
             variants={itemVariants}
           >
             <div className="flex items-center justify-center gap-1.5 text-xs text-muted-foreground/70">
               <ShieldCheckIcon className="size-3.5 text-emerald-500" />
-              <span>Restricted Access: {OPERATOR_EMAIL}</span>
+              <span>Restricted Access</span>
             </div>
             <p className="text-[11px] text-muted-foreground/50">
               Protected by 256-bit SSL • Cloudflare Edge Guard • Bitget USDT-M

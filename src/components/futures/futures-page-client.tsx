@@ -89,17 +89,34 @@ export function FuturesPageClient() {
         setConfig(merged)
         saveFuturesConfig(merged)
 
-        // Load positions for the synced mode
+        // Load positions for the synced mode from Cloudflare D1
         const isPaper = merged.isPaperTrading ?? true
-        if (!isPaper && merged.apiKey) {
-          fetchRealFuturesPositions(merged).then((realPositions) => {
-            if (realPositions.length > 0) {
-              setPositions(realPositions)
-              saveFuturesPositions(realPositions, false)
-            }
-          })
+        if (isPaper) {
+          if (Array.isArray(synced.positions)) {
+            setPositions(synced.positions)
+            saveFuturesPositions(synced.positions, true)
+          } else {
+            setPositions(loadFuturesPositions(true))
+          }
         } else {
-          setPositions(loadFuturesPositions(isPaper))
+          if (Array.isArray(synced.livePositions) && synced.livePositions.length > 0) {
+            setPositions(synced.livePositions)
+            saveFuturesPositions(synced.livePositions, false)
+          } else {
+            setPositions(loadFuturesPositions(false))
+          }
+          if (merged.apiKey) {
+            fetchRealFuturesPositions(merged).then((realPositions) => {
+              if (realPositions.length > 0) {
+                setPositions(realPositions)
+                saveFuturesPositions(realPositions, false)
+              }
+            })
+          }
+        }
+
+        if (synced.realAccount) {
+          setRealAccount(synced.realAccount)
         }
 
         if (merged.apiKey) {
@@ -111,8 +128,13 @@ export function FuturesPageClient() {
           setPaperBalanceState(synced.paperBalance)
         }
 
-        if (Array.isArray(synced.quantLogs) && synced.quantLogs.length > 0) {
-          setQuantLogs(synced.quantLogs)
+        const cloudLogs = targetMode
+          ? (Array.isArray(synced.quantLogs) && synced.quantLogs.length > 0 ? synced.quantLogs : [])
+          : (Array.isArray(synced.liveLogs) && synced.liveLogs.length > 0 ? synced.liveLogs : (Array.isArray(synced.quantLogs) ? synced.quantLogs : []))
+
+        if (cloudLogs.length > 0) {
+          setQuantLogs(cloudLogs)
+          saveQuantLogs(cloudLogs, targetMode)
         }
       } else {
         refreshRealAccount()
@@ -270,14 +292,14 @@ export function FuturesPageClient() {
     setActionAlert("✓ รีเซ็ตกระเป๋าจำลองเป็น $10,000 USDT เรียบร้อยแล้ว")
   }
 
-  // Scan & Trade loop
+  // Scan & Trade loop (Auto-Ranked by Quant Multi-Factor Engine)
   const handleScanAndTrade = async () => {
     setIsScanning(true)
     try {
       const isPaper = config.isPaperTrading ?? true
       const currentPositions = loadFuturesPositions(isPaper)
       const currentTickers = tickers.length > 0 ? tickers : await fetchTopBitgetFuturesTickers()
-      if (currentTickers.length === 0 && tickers.length === 0) {
+      if (currentTickers.length === 0) {
         setActionAlert("⚠️ ไม่สามารถโหลดข้อมูลตลาด Futures ได้")
         return
       }
@@ -285,104 +307,144 @@ export function FuturesPageClient() {
       const balance = isPaper ? getPaperFuturesBalance() : (realAccount?.availableUsdt ?? 0)
       const reserveUsdt = (balance * (config.cashReservePercent || 30)) / 100
       const deployable = balance - reserveUsdt
+
+      if (deployable < 10) {
+        setActionAlert(`⚠️ ทุนคงเหลือ $${deployable.toFixed(2)} USDT ต่ำกว่าขั้นต่ำ (10 USDT)`)
+        return
+      }
+
       const longCount = currentPositions.filter((p) => p.positionSide === "long").length
       const shortCount = currentPositions.filter((p) => p.positionSide === "short").length
+      const heldMap = new Set(currentPositions.map((p) => `${p.symbol}_${p.positionSide}`))
 
-      let found = false
+      // 1. Score every ticker using the exact same Quant multi-factor formula as the Screener
+      const scoredCandidates = currentTickers
+        .map((t) => {
+          const change = t.change24h
+          const vol = t.usdtVolume
+          const high = t.high24h
+          const low = t.low24h
+          const range = high - low
+          const pos24h = range > 0 ? (t.lastPr - low) / range : 0.5
+          const rsi = t.rsi15m ?? Math.round(30 + pos24h * 40)
 
-      for (const ticker of currentTickers) {
-        const rsi = ticker.rsi15m ?? 50
-        const change = ticker.change24h
-        const score = ticker.aiScore ?? 50
+          // Long Score: Dip in Uptrend
+          let longScore = 10
+          if (change >= 1 && change <= 6) longScore += 35
+          else if (change > 0) longScore += 15
+          if (pos24h >= 0.35 && pos24h <= 0.55) longScore += 35
+          else if (pos24h >= 0.25) longScore += 20
+          if (vol > 20000000) longScore += 25
+          else if (vol > 5000000) longScore += 15
+          if (rsi < 40) longScore += 15
+          else if (rsi < 45) longScore += 8
 
-        // Long candidate: Dip in Uptrend RSI < 45
-        if (longCount < config.maxCoins && rsi < 45 && change > 0 && deployable >= 10) {
-          const trancheBudget = Math.min((deployable * config.tranchePercent) / 100, deployable)
-          if (trancheBudget < 10) continue
+          // Short Score: Overbought
+          let shortScore = 10
+          if (change > 8) shortScore += 35
+          else if (change > 5) shortScore += 20
+          if (pos24h > 0.85) shortScore += 35
+          else if (pos24h > 0.75) shortScore += 20
+          if (vol > 20000000) shortScore += 20
+          if (rsi > 70) shortScore += 15
+          else if (rsi > 65) shortScore += 8
 
-          const ai = await consultOpenRouterAgentFutures(
-            {
-              symbol: ticker.symbol,
-              currentPrice: ticker.lastPr,
-              change24h: change,
-              rsi15m: rsi,
-              aiScore: score,
-              fundingRate: ticker.fundingRate,
-            },
-            config
-          )
+          const bestScore = Math.min(99, Math.max(longScore, shortScore))
+          const preferredSide: "long" | "short" = longScore >= shortScore ? "long" : "short"
 
-          if (ai?.action === "LONG" && (ai?.confidence ?? 0) >= 70) {
-            const res = await executeFuturesOpenPosition(ticker.symbol, "long", ticker.lastPr, trancheBudget, config)
-            if (res.success) {
-              setPositions(res.updatedPositions)
-              setPaperBalanceState(getPaperFuturesBalance())
-              if (!isPaper) refreshRealAccount()
-              setActionAlert(res.message)
-              setQuantLogs((prev) => {
-                const updated = addLog(prev, {
-                  action: `🚀 OPEN LONG`,
-                  symbol: ticker.symbol,
-                  note: `${res.message} | AI: ${ai.reason}`,
-                  color: "#10b981",
-                })
-                saveQuantLogs(updated, isPaper)
-                return updated
-              })
-              found = true
-              break
-            }
+          return {
+            ...t,
+            rsi15m: rsi,
+            longScore: Math.min(99, longScore),
+            shortScore: Math.min(99, shortScore),
+            aiScore: bestScore,
+            preferredSide,
           }
-        }
+        })
+        .sort((a, b) => b.aiScore - a.aiScore)
 
-        // Short candidate: Overbought RSI > 65
-        if (shortCount < config.maxCoins && rsi > 65 && change > 5 && deployable >= 10) {
-          const trancheBudget = Math.min((deployable * config.tranchePercent) / 100, deployable)
-          if (trancheBudget < 10) continue
+      let executed = false
+      let holdReason = ""
 
-          const ai = await consultOpenRouterAgentFutures(
-            {
-              symbol: ticker.symbol,
-              currentPrice: ticker.lastPr,
-              change24h: change,
-              rsi15m: rsi,
-              aiScore: score,
-              fundingRate: ticker.fundingRate,
-            },
-            config
-          )
+      for (const candidate of scoredCandidates) {
+        const side = candidate.preferredSide
+        if (heldMap.has(`${candidate.symbol}_${side}`)) continue
 
-          if (ai?.action === "SHORT" && (ai?.confidence ?? 0) >= 70) {
-            const res = await executeFuturesOpenPosition(ticker.symbol, "short", ticker.lastPr, trancheBudget, config)
-            if (res.success) {
-              setPositions(res.updatedPositions)
-              setPaperBalanceState(getPaperFuturesBalance())
-              if (!isPaper) refreshRealAccount()
-              setActionAlert(res.message)
-              setQuantLogs((prev) => {
-                const updated = addLog(prev, {
-                  action: `📉 OPEN SHORT`,
-                  symbol: ticker.symbol,
-                  note: `${res.message} | AI: ${ai.reason}`,
-                  color: "#f59e0b",
-                })
-                saveQuantLogs(updated, isPaper)
-                return updated
+        // Check portfolio quota
+        if (side === "long" && longCount >= config.maxCoins) continue
+        if (side === "short" && shortCount >= config.maxCoins) continue
+
+        // Check if candidate qualifies (Score >= 75 OR Dip in Uptrend)
+        const isLongDip = side === "long" && candidate.rsi15m <= 45 && candidate.change24h > 0
+        const isShortPeak = side === "short" && candidate.rsi15m >= 62
+        if (!isLongDip && !isShortPeak && candidate.aiScore < 75) continue
+
+        const trancheBudget = Math.min((deployable * config.tranchePercent) / 100, deployable)
+        if (trancheBudget < 10) continue
+
+        // Consult Groq AI Agent on Cloudflare
+        const ai = await consultOpenRouterAgentFutures(
+          {
+            symbol: candidate.symbol,
+            currentPrice: candidate.lastPr,
+            change24h: candidate.change24h,
+            rsi15m: candidate.rsi15m,
+            aiScore: candidate.aiScore,
+            fundingRate: candidate.fundingRate,
+          },
+          config
+        )
+
+        const aiAction = ai?.action?.toLowerCase() || (side === "long" ? "long" : "short")
+        const aiConf = ai?.confidence ?? 80
+
+        // If AI recommends entering (LONG or SHORT) with confidence >= 65%
+        if ((aiAction === "long" || aiAction === "short") && aiConf >= 65) {
+          const targetSide: "long" | "short" = aiAction === "long" ? "long" : "short"
+          const res = await executeFuturesOpenPosition(candidate.symbol, targetSide, candidate.lastPr, trancheBudget, config)
+          if (res.success) {
+            setPositions(res.updatedPositions)
+            setPaperBalanceState(getPaperFuturesBalance())
+            if (!isPaper) refreshRealAccount()
+            setActionAlert(res.message)
+            setQuantLogs((prev) => {
+              const updated = addLog(prev, {
+                action: targetSide === "long" ? "🚀 OPEN LONG" : "📉 OPEN SHORT",
+                symbol: candidate.symbol,
+                note: `${res.message} | AI (${ai?.modelUsed || "Groq"}): ${ai?.reason || "Quant Multi-Factor Approved"}`,
+                color: targetSide === "long" ? "#10b981" : "#f59e0b",
               })
-              found = true
-              break
-            }
+              saveQuantLogs(updated, isPaper)
+              return updated
+            })
+            executed = true
+            break
+          } else {
+            holdReason = res.message
           }
+        } else if (ai?.action === "HOLD") {
+          holdReason = `AI แนะนำ HOLD ${candidate.symbol} (${candidate.aiScore}/100): ${ai.reason}`
+          setQuantLogs((prev) => {
+            const updated = addLog(prev, {
+              action: "⏸️ [AI HOLD]",
+              symbol: candidate.symbol,
+              note: `AI (${ai?.modelUsed || "Groq"}): ${ai?.reason || "Hold"} (Score ${candidate.aiScore}/100, RSI ${candidate.rsi15m})`,
+              color: "#6b7280",
+            })
+            saveQuantLogs(updated, isPaper)
+            return updated
+          })
         }
       }
 
-      if (!found) {
-        setActionAlert("🔍 สแกนเสร็จ — ไม่พบสัญญาณ Long/Short ที่ผ่านเกณฑ์ Quant ในขณะนี้")
+      if (!executed) {
+        setActionAlert(holdReason ? `🔍 ${holdReason}` : "🔍 สแกนเสร็จ — ไม่พบสัญญาณ Long/Short ที่ผ่านเกณฑ์ Quant ในขณะนี้")
       }
     } finally {
       setIsScanning(false)
     }
   }
+
 
   // Manual Open Position
   const handleManualOpen = async (side: "long" | "short", budget: number) => {

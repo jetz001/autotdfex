@@ -1,10 +1,20 @@
-// Cloudflare Pages Function: OpenRouter AI Agent for autoTDFex Futures
-// Supports multi-tier free model fallback for Long/Short/Hold decisions
+// Cloudflare Pages Function: Groq & OpenRouter AI Autonomous Futures Agent
+// Tier 1: Groq High-Speed LPU Inference (Primary — Sub-second latency)
+// Tier 2: OpenRouter Dynamic Free Models Auto-Fallback (Secondary)
+// Tier 3: Heuristic Quant Multi-Factor Rule Engine (Guaranteed Safeguard)
 
 interface Env {
+  GROQ_API_KEY?: string;
   OPENROUTER_API_KEY?: string;
   AI_API_KEY?: string;
 }
+
+export const GROQ_MODELS = [
+  "qwen/qwen3.8-27b",
+  "openai/gpt-oss-120b",
+  "openai/gpt-oss-20b",
+  "allam-2-7b",
+];
 
 export const DEFAULT_FREE_MODELS = [
   "inclusionai/ling-3.0-flash-fin:free",
@@ -20,6 +30,14 @@ export const DEFAULT_FREE_MODELS = [
 let cachedFreeModels: string[] = [...DEFAULT_FREE_MODELS];
 let lastModelsFetchTime = 0;
 const CACHE_TTL_MS = 3600 * 1000;
+
+let aiRateLimitState = {
+  isLimited: false,
+  limitedAt: "",
+  resumeAt: "",
+  resumeTimestamp: 0,
+  provider: "",
+};
 
 async function getLiveFreeModels(apiKey?: string): Promise<string[]> {
   const now = Date.now();
@@ -48,7 +66,7 @@ async function getLiveFreeModels(apiKey?: string): Promise<string[]> {
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, x-openrouter-key, Authorization",
+  "Access-Control-Allow-Headers": "Content-Type, x-groq-key, x-openrouter-key, Authorization",
 };
 
 export const onRequest: PagesFunction<Env> = async (context) => {
@@ -56,29 +74,81 @@ export const onRequest: PagesFunction<Env> = async (context) => {
 
   if (request.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
-  const aiKey =
+  const groqKey =
+    request.headers.get("x-groq-key") ||
+    (env as any).GROQ_API_KEY ||
+    (env as any).GROQ_KEY ||
+    (env as any).AI_GROQ_KEY;
+
+  const openrouterKey =
     request.headers.get("x-openrouter-key") ||
     (env as any).OPENROUTER_API_KEY ||
     (env as any).AI_API_KEY;
 
   if (request.method === "GET") {
-    const liveModels = await getLiveFreeModels(aiKey || undefined);
-    return Response.json({ status: "READY", hasKey: Boolean(aiKey), availableFreeModels: liveModels }, { headers: corsHeaders });
+    const liveModels = await getLiveFreeModels(openrouterKey || undefined);
+    return Response.json(
+      {
+        status: "READY",
+        primaryProvider: "groq",
+        hasGroqKey: Boolean(groqKey),
+        hasOpenRouterKey: Boolean(openrouterKey),
+        groqModels: GROQ_MODELS,
+        fallbackFreeModels: liveModels,
+      },
+      { headers: corsHeaders }
+    );
   }
 
   if (request.method !== "POST") return new Response("Method not allowed", { status: 405, headers: corsHeaders });
 
   let body: any = {};
-  try { body = await request.json(); } catch {
+  try {
+    body = await request.json();
+  } catch {
     return Response.json({ code: "40000", msg: "Invalid JSON" }, { status: 400, headers: corsHeaders });
   }
 
-  const effectiveKey = aiKey || body.apiKey;
-  if (!effectiveKey) {
-    return Response.json({ code: "40001", msg: "Missing OpenRouter API Key" }, { status: 400, headers: corsHeaders });
-  }
+  const effectiveGroqKey = body.groqApiKey || groqKey;
+  const effectiveOpenrouterKey = body.openrouterApiKey || body.apiKey || openrouterKey;
 
-  const { symbol = "BTCUSDT", currentPrice = 0, change24h = 0, rsi15m = 50, aiScore = 80, fundingRate = 0, recentCandles = [] } = body;
+  const {
+    symbol = "BTCUSDT",
+    currentPrice = 0,
+    change24h = 0,
+    rsi15m = 50,
+    aiScore = 80,
+    fundingRate = 0,
+    recentCandles = [],
+  } = body;
+
+  const now = Date.now();
+
+  // 0. Rate Limit Cooldown Guard
+  if (now < aiRateLimitState.resumeTimestamp) {
+    const remainingSec = Math.ceil((aiRateLimitState.resumeTimestamp - now) / 1000);
+    return Response.json(
+      {
+        code: "00000",
+        msg: "rate_limited_cooldown",
+        data: {
+          action: aiScore >= 80 ? (rsi15m <= 45 ? "LONG" : "SHORT") : "HOLD",
+          confidence: aiScore >= 80 ? 80 : 50,
+          reason: `[AI Cooldown] ติด Rate Limit (${aiRateLimitState.provider}) เมื่อ ${aiRateLimitState.limitedAt} | จะเริ่มเรียก AI ใหม่อัตโนมัติเวลา ${aiRateLimitState.resumeAt} (ระบบ Quant เฝ้าระวังเงียบๆ โดยไม่ยิง API ซ้ำ)`,
+          modelUsed: "quant_passive_sentinel",
+          symbol,
+          price: currentPrice,
+          isCoolingDown: true,
+          limitedAt: aiRateLimitState.limitedAt,
+          resumeAt: aiRateLimitState.resumeAt,
+          remainingSec,
+        },
+      },
+      { headers: corsHeaders }
+    );
+  } else if (aiRateLimitState.isLimited) {
+    aiRateLimitState.isLimited = false;
+  }
 
   const prompt = `You are the Chief Quantitative AI Trading Agent for Bitget USDT-M Perpetual Futures (autoTDFex system).
 Evaluate this Futures trading candidate with Two-way Hedge Mode (can go Long or Short):
@@ -91,83 +161,192 @@ Evaluate this Futures trading candidate with Two-way Hedge Mode (can go Long or 
 - Recent 15m Candles (OHLCV): ${JSON.stringify(recentCandles.slice(-5))}
 
 Trading Mandate (5x Cross Leverage, Hedge Mode):
-1. If RSI < 45 AND trend is down AND funding rate is positive (squeezed longs), recommend SHORT.
-2. If RSI < 40 AND pullback in uptrend (Dip-in-Uptrend), recommend LONG with high confidence.
+1. If RSI < 45 AND pullback in uptrend (Dip-in-Uptrend), recommend LONG with high confidence (70-95%).
+2. If RSI > 62 OR sharp overbought peak with negative divergence, recommend SHORT with high confidence (70-95%).
 3. If market is sideways or unclear, recommend HOLD.
-4. Keep reason analytical, max 2 sentences.
+4. Keep reason analytical, concise, max 2 sentences (in Thai or English).
 
 Respond ONLY with valid JSON:
 {
   "action": "LONG" | "SHORT" | "HOLD",
-  "confidence": number (60-95),
+  "confidence": number,
   "reason": "1-2 sentence rationalization",
   "stopLossPrice": number,
   "takeProfitPrice": number
 }`;
 
-  const modelsToTry = await getLiveFreeModels(effectiveKey);
   let lastError: any = null;
 
-  for (let i = 0; i < modelsToTry.length; i++) {
-    const model = modelsToTry[i];
-    try {
-      const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${effectiveKey}`,
-          "Content-Type": "application/json",
-          "HTTP-Referer": "https://autotdfex.pages.dev",
-          "X-Title": "autoTDFex Futures Bot",
-        },
-        body: JSON.stringify({
-          model,
-          models: modelsToTry.slice(i, i + 3),
-          messages: [{ role: "user", content: prompt }],
-          response_format: { type: "json_object" },
-          temperature: 0.2,
-        }),
-      });
-
-      if (!res.ok) {
-        const errBody = await res.text();
-        lastError = new Error(`HTTP ${res.status}: ${errBody}`);
-        continue;
-      }
-
-      const data = (await res.json()) as any;
-      const content = data.choices?.[0]?.message?.content;
-      if (!content) { lastError = new Error("Empty response"); continue; }
-
-      const jsonMatch = content.match(/\{[\s\S]*\}/);
-      const parsed = JSON.parse(jsonMatch ? jsonMatch[0] : content);
-
-      return Response.json(
-        {
-          code: "00000",
-          msg: "success",
-          data: {
-            action: parsed.action || "HOLD",
-            confidence: Number(parsed.confidence) || 75,
-            reason: parsed.reason || "AI evaluated market conditions",
-            modelUsed: model,
-            symbol,
-            price: currentPrice,
+  // ==========================================
+  // TIER 1: GROQ HIGH-SPEED ULTRA-LOW-LATENCY INFERENCE (PRIMARY)
+  // ==========================================
+  if (effectiveGroqKey) {
+    for (const model of GROQ_MODELS) {
+      try {
+        const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${effectiveGroqKey}`,
+            "Content-Type": "application/json",
           },
-        },
-        { headers: corsHeaders }
-      );
-    } catch (err: any) {
-      lastError = err;
+          body: JSON.stringify({
+            model,
+            max_tokens: 300,
+            messages: [{ role: "user", content: prompt }],
+            response_format: { type: "json_object" },
+            temperature: 0.2,
+          }),
+        });
+
+        if (!res.ok) {
+          if (res.status === 429) {
+            const retryHeader = res.headers.get("retry-after") || res.headers.get("x-ratelimit-reset");
+            const waitSeconds = retryHeader ? Math.min(300, Math.max(30, parseInt(retryHeader, 10) || 60)) : 60;
+            const resumeTime = new Date(Date.now() + waitSeconds * 1000);
+            aiRateLimitState = {
+              isLimited: true,
+              limitedAt: new Date().toLocaleTimeString("th-TH"),
+              resumeAt: resumeTime.toLocaleTimeString("th-TH"),
+              resumeTimestamp: Date.now() + waitSeconds * 1000,
+              provider: `Groq/${model}`,
+            };
+            lastError = new Error(`Groq rate limit hit, cooldown until ${aiRateLimitState.resumeAt}`);
+            break;
+          }
+          lastError = new Error(`Groq ${model} returned HTTP ${res.status}`);
+          continue;
+        }
+
+        const data = (await res.json()) as any;
+        const content = data.choices?.[0]?.message?.content;
+        if (!content) {
+          lastError = new Error(`Empty response from Groq ${model}`);
+          continue;
+        }
+
+        const jsonMatch = content.match(/\{[\s\S]*\}/);
+        const parsed = JSON.parse(jsonMatch ? jsonMatch[0] : content);
+
+        let action = parsed.action || "HOLD";
+        if (action !== "LONG" && action !== "SHORT" && action !== "HOLD") {
+          action = "HOLD";
+        }
+
+        return Response.json(
+          {
+            code: "00000",
+            msg: "success",
+            provider: "groq",
+            data: {
+              action,
+              confidence: Number(parsed.confidence) || 85,
+              reason: parsed.reason || "Groq AI evaluated Futures technicals and momentum",
+              modelUsed: `groq/${model}`,
+              symbol,
+              price: currentPrice,
+              stopLossPrice: parsed.stopLossPrice,
+              takeProfitPrice: parsed.takeProfitPrice,
+            },
+          },
+          { headers: corsHeaders }
+        );
+      } catch (err: any) {
+        lastError = err;
+      }
     }
   }
 
-  // Heuristic Quant Rule Engine (Fallback when OpenRouter free tier hits daily limit)
+  // ==========================================
+  // TIER 2: OPENROUTER MULTI-MODEL FALLBACK LOOP (SECONDARY)
+  // ==========================================
+  if (effectiveOpenrouterKey) {
+    const modelsToTry = await getLiveFreeModels(effectiveOpenrouterKey);
+
+    for (let i = 0; i < modelsToTry.length; i++) {
+      const model = modelsToTry[i];
+      try {
+        const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${effectiveOpenrouterKey}`,
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://autotdfex.pages.dev",
+            "X-Title": "autoTDFex Futures Bot",
+          },
+          body: JSON.stringify({
+            model,
+            models: modelsToTry.slice(i, i + 3),
+            messages: [{ role: "user", content: prompt }],
+            response_format: { type: "json_object" },
+            temperature: 0.2,
+          }),
+        });
+
+        if (!res.ok) {
+          if (res.status === 429) {
+            const waitSeconds = 120;
+            const resumeTime = new Date(Date.now() + waitSeconds * 1000);
+            aiRateLimitState = {
+              isLimited: true,
+              limitedAt: new Date().toLocaleTimeString("th-TH"),
+              resumeAt: resumeTime.toLocaleTimeString("th-TH"),
+              resumeTimestamp: Date.now() + waitSeconds * 1000,
+              provider: `OpenRouter/${model}`,
+            };
+            lastError = new Error(`OpenRouter rate limit hit, cooldown until ${aiRateLimitState.resumeAt}`);
+            break;
+          }
+          lastError = new Error(`OpenRouter ${model} returned HTTP ${res.status}`);
+          continue;
+        }
+
+        const data = (await res.json()) as any;
+        const content = data.choices?.[0]?.message?.content;
+        if (!content) {
+          lastError = new Error(`Empty response from OpenRouter ${model}`);
+          continue;
+        }
+
+        const jsonMatch = content.match(/\{[\s\S]*\}/);
+        const parsed = JSON.parse(jsonMatch ? jsonMatch[0] : content);
+
+        let action = parsed.action || "HOLD";
+        if (action !== "LONG" && action !== "SHORT" && action !== "HOLD") {
+          action = "HOLD";
+        }
+
+        return Response.json(
+          {
+            code: "00000",
+            msg: "success",
+            provider: "openrouter",
+            data: {
+              action,
+              confidence: Number(parsed.confidence) || 75,
+              reason: parsed.reason || "OpenRouter AI evaluated Futures market conditions",
+              modelUsed: `openrouter/${model}`,
+              symbol,
+              price: currentPrice,
+              stopLossPrice: parsed.stopLossPrice,
+              takeProfitPrice: parsed.takeProfitPrice,
+            },
+          },
+          { headers: corsHeaders }
+        );
+      } catch (err: any) {
+        lastError = err;
+      }
+    }
+  }
+
+  // ==========================================
+  // TIER 3: HEURISTIC QUANT MULTI-FACTOR ENGINE (SAFEGUARD)
+  // ==========================================
   const positionPnl = typeof body.pnlPercent === "number" ? body.pnlPercent : null;
   let fallbackAction = "HOLD";
   let fallbackReason = `[Quant Rule Engine] Score ${aiScore}/100, RSI ${rsi15m}: รอสัญญาณที่ชัดเจน`;
   let fallbackConfidence = 50;
 
-  // 1. Position Close Rules (Take Profit / Cut Loss)
   if (positionPnl !== null) {
     if (positionPnl >= 3.5) {
       fallbackAction = "CLOSE_PROFIT";
@@ -178,15 +357,11 @@ Respond ONLY with valid JSON:
       fallbackReason = `[Quant Auto-SL] Position PnL ${positionPnl.toFixed(2)}% <= -5.0%: ถึงจุดตัดขาดทุน รักษาเงินต้น`;
       fallbackConfidence = 95;
     }
-  }
-  // 2. Open SHORT Signal (Overbought / Dip from peak / High positive change)
-  else if (aiScore >= 75 && (rsi15m >= 62 || (change24h >= 5 && rsi15m >= 55))) {
+  } else if (aiScore >= 75 && (rsi15m >= 62 || (change24h >= 5 && rsi15m >= 55))) {
     fallbackAction = "SHORT";
     fallbackReason = `[Quant Rule Engine] Overbought Signal: Score ${aiScore}/100, RSI 15m ${rsi15m}, 24h Change +${change24h}% — เปิด SHORT ดักย่อ`;
     fallbackConfidence = 85;
-  }
-  // 3. Open LONG Signal (Dip in Uptrend)
-  else if (aiScore >= 75 && rsi15m <= 45 && change24h > 0) {
+  } else if (aiScore >= 75 && rsi15m <= 45 && change24h > 0) {
     fallbackAction = "LONG";
     fallbackReason = `[Quant Rule Engine] Dip in Uptrend: Score ${aiScore}/100, RSI 15m ${rsi15m}, 24h Change +${change24h}% — เปิด LONG ตามเทรนด์`;
     fallbackConfidence = 85;
@@ -196,6 +371,7 @@ Respond ONLY with valid JSON:
     {
       code: "00000",
       msg: "quant_rule_engine",
+      provider: "heuristic",
       data: {
         action: fallbackAction,
         confidence: fallbackConfidence,

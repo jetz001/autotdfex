@@ -4,13 +4,15 @@
 
 import { calculateRSI } from './quantEngine';
 
-export const EDGE_BOT_URL = '';
+// Shared Edge Bot (bitget-ai-trader Worker) — ใช้ร่วมกับ autoTDFex Pages
+export const EDGE_BOT_URL = 'https://bitget-ai-trader.jimwar02.workers.dev';
 
 export interface FuturesConfig {
   apiKey: string;
   secretKey: string;
   passphrase: string;
   openrouterApiKey?: string;
+  groqApiKey?: string;
   isPaperTrading: boolean;
   autoPilotEnabled: boolean;
   tranchePercent: number;
@@ -90,6 +92,7 @@ export function loadFuturesConfig(): FuturesConfig {
     secretKey: '',
     passphrase: '',
     openrouterApiKey: '',
+    groqApiKey: '',
     isPaperTrading: true,
     autoPilotEnabled: true,
     tranchePercent: 20,
@@ -297,7 +300,14 @@ export async function fetchRealFuturesAccount(config?: FuturesConfig): Promise<R
   // 1. WebSocket Live Stream (Priority 1 — 100% bypasses CORS & WAF in browser)
   try {
     const wsRes = await fetchRealFuturesAccountViaWs(activeConfig);
-    if (wsRes && wsRes.connected) return wsRes;
+    if (wsRes && wsRes.connected) {
+      fetch('/api/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ realAccount: wsRes }),
+      }).catch(() => {});
+      return wsRes;
+    }
   } catch (wsErr) {
     console.warn('WS balance fetch failed, falling back to REST:', wsErr);
   }
@@ -324,7 +334,7 @@ export async function fetchRealFuturesAccount(config?: FuturesConfig): Promise<R
     if (json.code === '00000' && Array.isArray(json.data)) {
       const usdtAcc = json.data.find((a: any) => a.marginCoin === 'USDT') || json.data[0];
       if (usdtAcc) {
-        return {
+        const result: RealFuturesAccount = {
           connected: true,
           marginCoin: usdtAcc.marginCoin || 'USDT',
           availableUsdt: parseFloat(usdtAcc.available || usdtAcc.maxOpenPosAvailable || '0'),
@@ -334,6 +344,12 @@ export async function fetchRealFuturesAccount(config?: FuturesConfig): Promise<R
           bonus: parseFloat(usdtAcc.bonus || '0'),
           message: '✓ เชื่อมต่อกระเป๋า Bitget USDT-M Futures จริงสำเร็จ',
         };
+        fetch('/api/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ realAccount: result }),
+        }).catch(() => {});
+        return result;
       }
     } else if (json.msg) {
       defaultRes.message = `Bitget API (${json.code}): ${json.msg}`;
@@ -342,31 +358,14 @@ export async function fetchRealFuturesAccount(config?: FuturesConfig): Promise<R
     console.warn('Direct fetchRealFuturesAccount error, falling back to proxy:', err);
   }
 
-  // 3. Fallback via Cloudflare Pages Function proxy
+  // 3. Fallback via Cloudflare D1 Cache
   try {
-    const headers: Record<string, string> = {};
-    if (activeConfig.apiKey) headers['x-bitget-key'] = activeConfig.apiKey;
-    if (activeConfig.secretKey) headers['x-bitget-secret'] = activeConfig.secretKey;
-    if (activeConfig.passphrase) headers['x-bitget-passphrase'] = activeConfig.passphrase;
-
-    const pRes = await fetch('/api/bitget?action=balance', { headers });
-    if (pRes.ok) {
-      const pJson = await pRes.json();
-      if (pJson.code === '00000' && Array.isArray(pJson.data)) {
-        const usdtAcc = pJson.data.find((a: any) => a.marginCoin === 'USDT') || pJson.data[0];
-        if (usdtAcc) {
-          return {
-            connected: true,
-            marginCoin: usdtAcc.marginCoin || 'USDT',
-            availableUsdt: parseFloat(usdtAcc.available || usdtAcc.maxOpenPosAvailable || '0'),
-            equityUsdt: parseFloat(usdtAcc.equity || usdtAcc.usdtEquity || '0'),
-            lockedUsdt: parseFloat(usdtAcc.locked || '0'),
-            unrealizedPnl: parseFloat(usdtAcc.unrealizedPL || '0'),
-            bonus: parseFloat(usdtAcc.bonus || '0'),
-            message: '✓ เชื่อมต่อกระเป๋า Bitget USDT-M Futures จริงสำเร็จ (Proxy)',
-          };
-        }
-      }
+    const cloudData = await syncFuturesConfigFromCloudflare();
+    if (cloudData?.realAccount?.connected) {
+      return {
+        ...cloudData.realAccount,
+        message: '✓ เชื่อมต่อกระเป๋า Bitget USDT-M Futures สำเร็จ (Cloud D1 Synced)',
+      };
     }
   } catch {}
 
@@ -425,6 +424,12 @@ export function saveFuturesPositions(positions: FuturesPosition[], isPaper = tru
   if (typeof window !== 'undefined') {
     const key = isPaper ? STORAGE_KEY_PAPER_POSITIONS : STORAGE_KEY_LIVE_POSITIONS;
     localStorage.setItem(key, JSON.stringify(positions));
+    // Asynchronously push to Cloudflare D1 via /api/config so any device sees the exact same positions state!
+    fetch('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(isPaper ? { positions } : { livePositions: positions }),
+    }).catch(() => {});
   }
 }
 
@@ -603,7 +608,10 @@ export async function signBitgetRequest(
 export interface SyncedCloudFuturesData extends Partial<FuturesConfig> {
   paperBalance?: number;
   positions?: FuturesPosition[];
+  livePositions?: FuturesPosition[];
   quantLogs?: Array<{ id: string; time: string; action: string; symbol: string; note: string; color: string }>;
+  liveLogs?: Array<{ id: string; time: string; action: string; symbol: string; note: string; color: string }>;
+  realAccount?: RealFuturesAccount;
 }
 
 export async function syncFuturesConfigFromCloudflare(): Promise<SyncedCloudFuturesData | null> {
@@ -1089,12 +1097,17 @@ export async function consultOpenRouterAgentFutures(
 ): Promise<AIAgentFuturesDecision | null> {
   try {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (config?.groqApiKey) headers['x-groq-key'] = config.groqApiKey;
     if (config?.openrouterApiKey) headers['x-openrouter-key'] = config.openrouterApiKey;
 
     const res = await fetch('/api/agent', {
       method: 'POST',
       headers,
-      body: JSON.stringify(candidate),
+      body: JSON.stringify({
+        ...candidate,
+        groqApiKey: config?.groqApiKey,
+        openrouterApiKey: config?.openrouterApiKey,
+      }),
     });
     if (!res.ok) return null;
     const json = await res.json();

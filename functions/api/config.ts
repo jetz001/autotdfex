@@ -9,6 +9,7 @@ interface Env {
   BITGET_SECRET_KEY?: string;
   BITGET_PASSPHRASE?: string;
   OPENROUTER_API_KEY?: string;
+  GROQ_API_KEY?: string;
 }
 
 const corsHeaders = {
@@ -26,6 +27,7 @@ const CORE_SETTINGS_KEYS = [
   "secretKey",
   "passphrase",
   "openrouterApiKey",
+  "groqApiKey",
   "isPaperTrading",
   "autoPilotEnabled",
   "tranchePercent",
@@ -46,6 +48,7 @@ function getBaseDefaults(env: Env) {
     secretKey: env.BITGET_SECRET_KEY || "",
     passphrase: env.BITGET_PASSPHRASE || "",
     openrouterApiKey: env.OPENROUTER_API_KEY || "",
+    groqApiKey: env.GROQ_API_KEY || "",
     isPaperTrading: false,
     autoPilotEnabled: true,
     tranchePercent: 20,
@@ -119,6 +122,7 @@ async function readConfig(env: Env): Promise<any> {
             secretKey: json.data.secretKey,
             passphrase: json.data.passphrase,
             openrouterApiKey: json.data.openrouterApiKey,
+            groqApiKey: json.data.groqApiKey,
           };
         }
       }
@@ -132,6 +136,7 @@ async function readConfig(env: Env): Promise<any> {
     secretKey: futuresSaved?.secretKey || sharedBase?.secretKey || "",
     passphrase: futuresSaved?.passphrase || sharedBase?.passphrase || "",
     openrouterApiKey: futuresSaved?.openrouterApiKey || sharedBase?.openrouterApiKey || "",
+    groqApiKey: futuresSaved?.groqApiKey || sharedBase?.groqApiKey || "",
   };
 
   memoryConfigCache = combined;
@@ -148,6 +153,23 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
   const baseDefaults = getBaseDefaults(env);
   const savedConfig = await readConfig(env);
 
+  let d1PaperLogs: any[] = [];
+  let d1LiveLogs: any[] = [];
+
+  if (env.DB) {
+    try {
+      const { results } = await env.DB.prepare(
+        "SELECT id, time, action, symbol, note, color, is_paper FROM quant_logs ORDER BY created_at DESC LIMIT 50"
+      ).all();
+      if (Array.isArray(results) && results.length > 0) {
+        d1PaperLogs = results.filter((r: any) => r.is_paper === 1 || r.is_paper === true);
+        d1LiveLogs = results.filter((r: any) => r.is_paper === 0 || r.is_paper === false);
+      }
+    } catch (e) {
+      console.warn("D1 query quant_logs error:", e);
+    }
+  }
+
   const merged = {
     ...baseDefaults,
     ...(savedConfig || {}),
@@ -155,6 +177,9 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
     secretKey: savedConfig?.secretKey || baseDefaults.secretKey,
     passphrase: savedConfig?.passphrase || baseDefaults.passphrase,
     openrouterApiKey: savedConfig?.openrouterApiKey || baseDefaults.openrouterApiKey,
+    groqApiKey: savedConfig?.groqApiKey || baseDefaults.groqApiKey,
+    quantLogs: d1PaperLogs.length > 0 ? d1PaperLogs : (savedConfig?.quantLogs || []),
+    liveLogs: d1LiveLogs.length > 0 ? d1LiveLogs : (savedConfig?.liveLogs || []),
   };
 
   return Response.json(
@@ -189,6 +214,7 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
       secretKey: body.secretKey || currentSaved.secretKey || baseDefaults.secretKey,
       passphrase: body.passphrase || currentSaved.passphrase || baseDefaults.passphrase,
       openrouterApiKey: body.openrouterApiKey || currentSaved.openrouterApiKey || baseDefaults.openrouterApiKey,
+      groqApiKey: body.groqApiKey || currentSaved.groqApiKey || baseDefaults.groqApiKey,
     };
 
     memoryConfigCache = merged;
@@ -210,26 +236,43 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
               apiKey: body.apiKey,
               secretKey: body.secretKey,
               passphrase: body.passphrase || "",
-              openrouterApiKey: body.openrouterApiKey || ""
+              openrouterApiKey: body.openrouterApiKey || "",
+              groqApiKey: body.groqApiKey || ""
             })).run();
           } catch {}
         }
 
-        const logsToInsert = Array.isArray(body.liveLogs) ? body.liveLogs : Array.isArray(body.quantLogs) ? body.quantLogs : [];
+        if (body.clearLogs) {
+          try {
+            await env.DB.prepare("DELETE FROM quant_logs").run();
+          } catch {}
+        }
+
+        const logsToInsert = Array.isArray(body.liveLogs)
+          ? body.liveLogs
+          : Array.isArray(body.quantLogs)
+          ? body.quantLogs
+          : [];
+
         if (logsToInsert.length > 0) {
-          const latest = logsToInsert[0];
-          if (latest?.id) {
-            await env.DB.prepare(
-              "INSERT OR IGNORE INTO quant_logs (id, time, action, symbol, note, color, is_paper) VALUES (?, ?, ?, ?, ?, ?, ?)"
-            ).bind(
-              latest.id,
-              latest.time || "",
-              `[FUTURES] ${latest.action || ""}`,
-              latest.symbol || "",
-              latest.note || "",
-              latest.color || "",
-              merged.isPaperTrading ? 1 : 0
-            ).run();
+          try {
+            const isPaperLog = Array.isArray(body.quantLogs) && !Array.isArray(body.liveLogs);
+            const stmts = logsToInsert.slice(0, 30).map((l: any) =>
+              env.DB!.prepare(
+                "INSERT OR IGNORE INTO quant_logs (id, time, action, symbol, note, color, is_paper) VALUES (?, ?, ?, ?, ?, ?, ?)"
+              ).bind(
+                String(l.id || Date.now()),
+                String(l.time || ""),
+                String(l.action || ""),
+                String(l.symbol || ""),
+                String(l.note || ""),
+                String(l.color || "#38bdf8"),
+                isPaperLog ? 1 : 0
+              )
+            );
+            await env.DB.batch(stmts);
+          } catch (batchErr) {
+            console.warn("D1 batch insert quant_logs error:", batchErr);
           }
         }
       } catch (e) {
