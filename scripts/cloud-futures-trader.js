@@ -312,15 +312,45 @@ async function runFuturesCycle() {
         const budget = 10; // $10 USDT margin per position
         const contracts = calculateContracts(budget, best.price, leverage);
         if (contracts > 0) {
-          console.log(`[CLOUD AUTO-LONG] ${best.symbol} score ${best.longScore}/100 @ $${best.price}, ${contracts} contracts`);
-          await setLeverage(best.symbol, leverage, config);
-          const res = await placeFuturesOrder(best.symbol, 'long', 'open', contracts, config);
-          if (res.code === '00000') {
-            newLogs.push({
-              id: Date.now().toString(), time: new Date().toLocaleTimeString('th-TH'),
-              action: '🚀 [CLOUD AUTO-LONG]', symbol: best.symbol,
-              note: `เปิด LONG Dip in Uptrend (Score ${best.longScore}/100) ${contracts} contracts @ $${best.price}`, color: '#10b981'
+          console.log(`[CLOUD AUTO-LONG] Candidate ${best.symbol} score ${best.longScore}/100 @ $${best.price}. Consulting Groq AI...`);
+          let allowTrade = true;
+          let aiReason = '';
+          try {
+            const aiRes = await fetch('https://autotdfex.pages.dev/api/agent', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                symbol: best.symbol,
+                currentPrice: best.price,
+                change24h: best.change,
+                rsi15m: 40,
+                aiScore: best.longScore,
+                tradingMode: 'FUTURES',
+              }),
             });
+            if (aiRes.ok) {
+              const aiData = await aiRes.json();
+              if (aiData?.data?.action === 'HOLD') {
+                console.log(`Groq AI recommended HOLD for ${best.symbol}: ${aiData.data.reason}`);
+                allowTrade = false;
+              } else {
+                aiReason = aiData?.data?.reason || '';
+              }
+            }
+          } catch (e) {
+            console.warn('AI agent consult error:', e.message);
+          }
+
+          if (allowTrade) {
+            await setLeverage(best.symbol, leverage, config);
+            const res = await placeFuturesOrder(best.symbol, 'long', 'open', contracts, config);
+            if (res.code === '00000') {
+              newLogs.push({
+                id: Date.now().toString(), time: new Date().toLocaleTimeString('th-TH'),
+                action: '🚀 [CLOUD AUTO-LONG]', symbol: best.symbol,
+                note: `เปิด LONG (Score ${best.longScore}/100) ${contracts} contracts @ $${best.price}${aiReason ? ` | AI: ${aiReason}` : ''}`, color: '#10b981'
+              });
+            }
           }
         }
       }
@@ -337,22 +367,52 @@ async function runFuturesCycle() {
         const budget = 10;
         const contracts = calculateContracts(budget, best.price, leverage);
         if (contracts > 0) {
-          console.log(`[CLOUD AUTO-SHORT] ${best.symbol} score ${best.shortScore}/100 @ $${best.price}, ${contracts} contracts`);
-          await setLeverage(best.symbol, leverage, config);
-          const res = await placeFuturesOrder(best.symbol, 'short', 'open', contracts, config);
-          if (res.code === '00000') {
-            newLogs.push({
-              id: Date.now().toString(), time: new Date().toLocaleTimeString('th-TH'),
-              action: '📉 [CLOUD AUTO-SHORT]', symbol: best.symbol,
-              note: `เปิด SHORT Overbought (Score ${best.shortScore}/100) ${contracts} contracts @ $${best.price}`, color: '#f59e0b'
+          console.log(`[CLOUD AUTO-SHORT] Candidate ${best.symbol} score ${best.shortScore}/100 @ $${best.price}. Consulting Groq AI...`);
+          let allowTrade = true;
+          let aiReason = '';
+          try {
+            const aiRes = await fetch('https://autotdfex.pages.dev/api/agent', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                symbol: best.symbol,
+                currentPrice: best.price,
+                change24h: best.change,
+                rsi15m: 65,
+                aiScore: best.shortScore,
+                tradingMode: 'FUTURES',
+              }),
             });
+            if (aiRes.ok) {
+              const aiData = await aiRes.json();
+              if (aiData?.data?.action === 'HOLD') {
+                console.log(`Groq AI recommended HOLD for ${best.symbol}: ${aiData.data.reason}`);
+                allowTrade = false;
+              } else {
+                aiReason = aiData?.data?.reason || '';
+              }
+            }
+          } catch (e) {
+            console.warn('AI agent consult error:', e.message);
+          }
+
+          if (allowTrade) {
+            await setLeverage(best.symbol, leverage, config);
+            const res = await placeFuturesOrder(best.symbol, 'short', 'open', contracts, config);
+            if (res.code === '00000') {
+              newLogs.push({
+                id: Date.now().toString(), time: new Date().toLocaleTimeString('th-TH'),
+                action: '📉 [CLOUD AUTO-SHORT]', symbol: best.symbol,
+                note: `เปิด SHORT (Score ${best.shortScore}/100) ${contracts} contracts @ $${best.price}${aiReason ? ` | AI: ${aiReason}` : ''}`, color: '#f59e0b'
+              });
+            }
           }
         }
       }
     }
   }
 
-  // 7. Push health log to Cloudflare
+  // 7. Push health log & synced positions to Cloudflare D1
   const statusLog = {
     id: Date.now().toString(),
     time: new Date().toLocaleTimeString('th-TH'),
@@ -363,14 +423,19 @@ async function runFuturesCycle() {
   };
 
   try {
-    const existingLogs = Array.isArray(config.liveLogs) ? config.liveLogs : [];
-    const updatedLogs = [statusLog, ...newLogs, ...existingLogs].slice(0, 30);
+    const existingLogs = Array.isArray(config.quantLogs) ? config.quantLogs : (Array.isArray(config.liveLogs) ? config.liveLogs : []);
+    const updatedLogs = [statusLog, ...newLogs, ...existingLogs].slice(0, 50);
     await fetch(CLOUD_CONFIG_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ liveLogs: updatedLogs })
+      body: JSON.stringify({
+        liveLogs: updatedLogs,
+        quantLogs: updatedLogs,
+        livePositions: positions,
+        positions: positions,
+      })
     });
-    console.log('Pushed cloud health log successfully.');
+    console.log('Pushed cloud health log & positions to Cloudflare D1 successfully.');
   } catch (err) { console.warn('Sync log error:', err.message); }
 
   console.log('[autoTDFex Cloud Futures] Cycle completed successfully.');
