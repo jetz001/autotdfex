@@ -161,10 +161,11 @@ Evaluate this Futures trading candidate with Two-way Hedge Mode (can go Long or 
 - Recent 15m Candles (OHLCV): ${JSON.stringify(recentCandles.slice(-5))}
 
 Trading Mandate (5x Cross Leverage, Hedge Mode):
-1. If RSI < 45 AND pullback in uptrend (Dip-in-Uptrend), recommend LONG with high confidence (70-95%).
-2. If RSI > 62 OR sharp overbought peak with negative divergence, recommend SHORT with high confidence (70-95%).
-3. If market is sideways or unclear, recommend HOLD.
-4. Keep reason analytical, concise, max 2 sentences (in Thai or English).
+1. If RSI < 45 (or aiScore >= 80 with dip-in-uptrend), recommend LONG with high confidence (75-95%).
+2. If RSI > 62 (or aiScore >= 80 with overbought surge), recommend SHORT with high confidence (75-95%).
+3. DO NOT return HOLD solely because candle array is empty; evaluate decisively using the 24h Change, Quant Score, and 15m RSI.
+4. Only recommend HOLD if the asset is truly neutral/sideways (RSI 46-60 and score < 75).
+5. Keep reason analytical, concise, max 2 sentences (in Thai or English).
 
 Respond ONLY with valid JSON:
 {

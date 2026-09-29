@@ -170,9 +170,13 @@ async function runFuturesCycle() {
     if (t.symbol && t.lastPr) priceMap[t.symbol] = parseFloat(t.lastPr);
   }
 
-  // 3. Fetch current positions
-  const positions = await fetchFuturesPositions(config);
-  console.log(`Current Futures Positions (${positions.length}):`, positions.map(p => `${p.positionSide.toUpperCase()} ${p.symbol} ${p.contracts}c`).join(', '));
+  // 3. Fetch current positions (Support Paper & Live)
+  const isPaper = config.isPaperTrading ?? true;
+  let paperPositions = Array.isArray(config.paperPositions) ? config.paperPositions : (Array.isArray(config.positions) ? config.positions : []);
+  let paperBalance = typeof config.paperBalance === 'number' ? config.paperBalance : 10000;
+
+  let positions = isPaper ? paperPositions : await fetchFuturesPositions(config);
+  console.log(`Current Futures Positions [${isPaper ? 'PAPER' : 'LIVE'}] (${positions.length}):`, positions.map(p => `${p.positionSide.toUpperCase()} ${p.symbol} ${p.contracts}c`).join(', '));
 
   const newLogs = [];
 
@@ -182,34 +186,29 @@ async function runFuturesCycle() {
     const side = ACTION_INPUT.includes('long') ? 'long' : 'short';
     const pos = positions.find(p => p.symbol === targetSym && p.positionSide === side);
     if (pos && pos.contracts > 0) {
-      const closeRes = await placeFuturesOrder(targetSym, side, 'close', pos.contracts, config);
-      if (closeRes.code === '00000') {
-        const orderId = closeRes.data?.orderId || 'ok';
-        console.log(`On-demand close ${side} ${targetSym}: orderId=${orderId}`);
+      if (isPaper) {
+        paperPositions = paperPositions.filter(p => !(p.symbol === targetSym && p.positionSide === side));
+        const mark = priceMap[targetSym] || pos.markPrice || pos.avgOpenPrice;
+        const pnlPct = side === 'long' ? ((mark - pos.avgOpenPrice) / pos.avgOpenPrice) * 100 : ((pos.avgOpenPrice - mark) / pos.avgOpenPrice) * 100;
+        const profit = (pos.totalInvestedUsdt || 10) * (pnlPct / 100);
+        paperBalance += (pos.totalInvestedUsdt || 10) + profit;
+        positions = paperPositions;
         newLogs.push({
           id: Date.now().toString(), time: new Date().toLocaleTimeString('th-TH'),
-          action: `🎯 [CLOUD CLOSE ${side.toUpperCase()}]`, symbol: targetSym,
-          note: `ปิด ${side.toUpperCase()} ${pos.contracts} contracts สำเร็จ orderId=${orderId}`, color: '#10b981'
+          action: `🎯 [CLOUD CLOSE ${side.toUpperCase()} (PAPER)]`, symbol: targetSym,
+          note: `ปิด ${side.toUpperCase()} ${pos.contracts} contracts สำเร็จ (กำไร: $${profit.toFixed(2)})`, color: '#10b981'
         });
-      }
-    }
-  }
-
-  if ((ACTION_INPUT === 'futures_open_long' || ACTION_INPUT === 'futures_open_short') && SYMBOL_INPUT) {
-    const targetSym = SYMBOL_INPUT.endsWith('USDT') ? SYMBOL_INPUT : `${SYMBOL_INPUT}USDT`;
-    const side = ACTION_INPUT.includes('long') ? 'long' : 'short';
-    const price = priceMap[targetSym] || 0;
-    const budget = parseFloat(AMOUNT_INPUT || '10');
-    const contracts = calculateContracts(budget, price, leverage);
-    if (contracts > 0 && price > 0) {
-      await setLeverage(targetSym, leverage, config);
-      const openRes = await placeFuturesOrder(targetSym, side, 'open', contracts, config);
-      if (openRes.code === '00000') {
-        newLogs.push({
-          id: Date.now().toString(), time: new Date().toLocaleTimeString('th-TH'),
-          action: `🚀 [CLOUD OPEN ${side.toUpperCase()}]`, symbol: targetSym,
-          note: `เปิด ${side.toUpperCase()} ${contracts} contracts @ $${price} orderId=${openRes.data?.orderId || 'ok'}`, color: '#10b981'
-        });
+      } else {
+        const closeRes = await placeFuturesOrder(targetSym, side, 'close', pos.contracts, config);
+        if (closeRes.code === '00000') {
+          const orderId = closeRes.data?.orderId || 'ok';
+          console.log(`On-demand close ${side} ${targetSym}: orderId=${orderId}`);
+          newLogs.push({
+            id: Date.now().toString(), time: new Date().toLocaleTimeString('th-TH'),
+            action: `🎯 [CLOUD CLOSE ${side.toUpperCase()}]`, symbol: targetSym,
+            note: `ปิด ${side.toUpperCase()} ${pos.contracts} contracts สำเร็จ orderId=${orderId}`, color: '#10b981'
+          });
+        }
       }
     }
   }
@@ -230,23 +229,47 @@ async function runFuturesCycle() {
 
       if (pnlPct >= tpPct) {
         console.log(`🚀 [CLOUD TP] ${pos.positionSide.toUpperCase()} ${pos.symbol} +${pnlPct.toFixed(2)}% >= +${tpPct}%! Closing...`);
-        const res = await placeFuturesOrder(pos.symbol, pos.positionSide, 'close', pos.contracts, config);
-        if (res.code === '00000') {
+        if (isPaper) {
+          paperPositions = paperPositions.filter(p => !(p.symbol === pos.symbol && p.positionSide === pos.positionSide));
+          const profit = (pos.totalInvestedUsdt || 10) * (pnlPct / 100);
+          paperBalance += (pos.totalInvestedUsdt || 10) + profit;
+          positions = paperPositions;
           newLogs.push({
             id: Date.now().toString(), time: new Date().toLocaleTimeString('th-TH'),
-            action: `🎯 [CLOUD AUTO-TAKE PROFIT ${pos.positionSide.toUpperCase()}]`, symbol: pos.symbol,
-            note: `ล็อคกำไร +${pnlPct.toFixed(2)}% @ $${markPrice} — ปิด ${pos.contracts} contracts`, color: '#10b981'
+            action: `🎯 [CLOUD AUTO-TAKE PROFIT ${pos.positionSide.toUpperCase()} (PAPER)]`, symbol: pos.symbol,
+            note: `ล็อคกำไร +${pnlPct.toFixed(2)}% @ $${markPrice} — ปิด ${pos.contracts}c (กำไร +$${profit.toFixed(2)})`, color: '#10b981'
           });
+        } else {
+          const res = await placeFuturesOrder(pos.symbol, pos.positionSide, 'close', pos.contracts, config);
+          if (res.code === '00000') {
+            newLogs.push({
+              id: Date.now().toString(), time: new Date().toLocaleTimeString('th-TH'),
+              action: `🎯 [CLOUD AUTO-TAKE PROFIT ${pos.positionSide.toUpperCase()}]`, symbol: pos.symbol,
+              note: `ล็อคกำไร +${pnlPct.toFixed(2)}% @ $${markPrice} — ปิด ${pos.contracts} contracts`, color: '#10b981'
+            });
+          }
         }
       } else if (pnlPct <= -slPct) {
         console.log(`🚨 [CLOUD SL] ${pos.positionSide.toUpperCase()} ${pos.symbol} ${pnlPct.toFixed(2)}% <= -${slPct}%! Cutting...`);
-        const res = await placeFuturesOrder(pos.symbol, pos.positionSide, 'close', pos.contracts, config);
-        if (res.code === '00000') {
+        if (isPaper) {
+          paperPositions = paperPositions.filter(p => !(p.symbol === pos.symbol && p.positionSide === pos.positionSide));
+          const loss = (pos.totalInvestedUsdt || 10) * (Math.abs(pnlPct) / 100);
+          paperBalance += Math.max(0, (pos.totalInvestedUsdt || 10) - loss);
+          positions = paperPositions;
           newLogs.push({
             id: Date.now().toString(), time: new Date().toLocaleTimeString('th-TH'),
-            action: `🚨 [CLOUD AUTO-CUT LOSS ${pos.positionSide.toUpperCase()}]`, symbol: pos.symbol,
-            note: `คัทลอส ${pnlPct.toFixed(2)}% @ $${markPrice} — รักษาทุน`, color: '#ef4444'
+            action: `🚨 [CLOUD AUTO-CUT LOSS ${pos.positionSide.toUpperCase()} (PAPER)]`, symbol: pos.symbol,
+            note: `คัทลอส ${pnlPct.toFixed(2)}% @ $${markPrice} — รักษาทุน (-$${loss.toFixed(2)})`, color: '#ef4444'
           });
+        } else {
+          const res = await placeFuturesOrder(pos.symbol, pos.positionSide, 'close', pos.contracts, config);
+          if (res.code === '00000') {
+            newLogs.push({
+              id: Date.now().toString(), time: new Date().toLocaleTimeString('th-TH'),
+              action: `🚨 [CLOUD AUTO-CUT LOSS ${pos.positionSide.toUpperCase()}]`, symbol: pos.symbol,
+              note: `คัทลอส ${pnlPct.toFixed(2)}% @ $${markPrice} — รักษาทุน`, color: '#ef4444'
+            });
+          }
         }
       }
     }
@@ -344,14 +367,44 @@ async function runFuturesCycle() {
           }
 
           if (allowTrade) {
-            await setLeverage(best.symbol, leverage, config);
-            const res = await placeFuturesOrder(best.symbol, 'long', 'open', contracts, config);
-            if (res.code === '00000') {
+            if (isPaper) {
+              const newPos = {
+                symbol: best.symbol,
+                baseCoin: best.symbol.replace('USDT', ''),
+                positionSide: 'long',
+                contracts,
+                notionalUsdt: budget * leverage,
+                avgOpenPrice: best.price,
+                markPrice: best.price,
+                unrealizedPnlUsdt: 0,
+                pnlPercent: 0,
+                takeProfitPrice: best.price * (1 + tpPct / 100),
+                cutLossPrice: best.price * (1 - slPct / 100),
+                liquidationPrice: best.price * (1 - 0.8 / leverage),
+                leverage,
+                isPaper: true,
+                openTime: new Date().toLocaleTimeString('th-TH'),
+                tranchesCount: 1,
+                totalInvestedUsdt: budget,
+              };
+              paperPositions.push(newPos);
+              paperBalance -= budget;
+              positions = paperPositions;
               newLogs.push({
                 id: Date.now().toString(), time: new Date().toLocaleTimeString('th-TH'),
-                action: '🚀 [CLOUD AUTO-LONG]', symbol: best.symbol,
-                note: `เปิด LONG (Score ${best.longScore}/100) ${contracts} contracts @ $${best.price}${aiReason ? ` | AI: ${aiReason}` : ''}`, color: '#10b981'
+                action: '🚀 [CLOUD AUTO-LONG (PAPER)]', symbol: best.symbol,
+                note: `เปิด LONG Paper (Score ${best.longScore}/100) ${contracts} contracts @ $${best.price}${aiReason ? ` | AI: ${aiReason}` : ''}`, color: '#10b981'
               });
+            } else {
+              await setLeverage(best.symbol, leverage, config);
+              const res = await placeFuturesOrder(best.symbol, 'long', 'open', contracts, config);
+              if (res.code === '00000') {
+                newLogs.push({
+                  id: Date.now().toString(), time: new Date().toLocaleTimeString('th-TH'),
+                  action: '🚀 [CLOUD AUTO-LONG]', symbol: best.symbol,
+                  note: `เปิด LONG (Score ${best.longScore}/100) ${contracts} contracts @ $${best.price}${aiReason ? ` | AI: ${aiReason}` : ''}`, color: '#10b981'
+                });
+              }
             }
           }
         }
@@ -399,14 +452,44 @@ async function runFuturesCycle() {
           }
 
           if (allowTrade) {
-            await setLeverage(best.symbol, leverage, config);
-            const res = await placeFuturesOrder(best.symbol, 'short', 'open', contracts, config);
-            if (res.code === '00000') {
+            if (isPaper) {
+              const newPos = {
+                symbol: best.symbol,
+                baseCoin: best.symbol.replace('USDT', ''),
+                positionSide: 'short',
+                contracts,
+                notionalUsdt: budget * leverage,
+                avgOpenPrice: best.price,
+                markPrice: best.price,
+                unrealizedPnlUsdt: 0,
+                pnlPercent: 0,
+                takeProfitPrice: best.price * (1 - tpPct / 100),
+                cutLossPrice: best.price * (1 + slPct / 100),
+                liquidationPrice: best.price * (1 + 0.8 / leverage),
+                leverage,
+                isPaper: true,
+                openTime: new Date().toLocaleTimeString('th-TH'),
+                tranchesCount: 1,
+                totalInvestedUsdt: budget,
+              };
+              paperPositions.push(newPos);
+              paperBalance -= budget;
+              positions = paperPositions;
               newLogs.push({
                 id: Date.now().toString(), time: new Date().toLocaleTimeString('th-TH'),
-                action: '📉 [CLOUD AUTO-SHORT]', symbol: best.symbol,
-                note: `เปิด SHORT (Score ${best.shortScore}/100) ${contracts} contracts @ $${best.price}${aiReason ? ` | AI: ${aiReason}` : ''}`, color: '#f59e0b'
+                action: '📉 [CLOUD AUTO-SHORT (PAPER)]', symbol: best.symbol,
+                note: `เปิด SHORT Paper (Score ${best.shortScore}/100) ${contracts} contracts @ $${best.price}${aiReason ? ` | AI: ${aiReason}` : ''}`, color: '#f59e0b'
               });
+            } else {
+              await setLeverage(best.symbol, leverage, config);
+              const res = await placeFuturesOrder(best.symbol, 'short', 'open', contracts, config);
+              if (res.code === '00000') {
+                newLogs.push({
+                  id: Date.now().toString(), time: new Date().toLocaleTimeString('th-TH'),
+                  action: '📉 [CLOUD AUTO-SHORT]', symbol: best.symbol,
+                  note: `เปิด SHORT (Score ${best.shortScore}/100) ${contracts} contracts @ $${best.price}${aiReason ? ` | AI: ${aiReason}` : ''}`, color: '#f59e0b'
+                });
+              }
             }
           }
         }
@@ -418,7 +501,7 @@ async function runFuturesCycle() {
   const statusLog = {
     id: Date.now().toString(),
     time: new Date().toLocaleTimeString('th-TH'),
-    action: '🤖 [FUTURES CLOUD 24/7] ตรวจสอบพอร์ต',
+    action: `🤖 [FUTURES CLOUD 24/7] ตรวจสอบพอร์ต (${isPaper ? 'PAPER' : 'LIVE'})`,
     symbol: 'AUTOTDFEX',
     note: `สแกน Futures พอร์ต ${positions.length} positions | Leverage ${leverage}x | Cross USDT-M ระบบเฝ้าระวัง 24 ชม.`,
     color: '#38bdf8'
@@ -433,8 +516,10 @@ async function runFuturesCycle() {
       body: JSON.stringify({
         liveLogs: updatedLogs,
         quantLogs: updatedLogs,
-        livePositions: positions,
-        positions: positions,
+        livePositions: isPaper ? config.livePositions : positions,
+        paperPositions: isPaper ? paperPositions : config.paperPositions,
+        positions: isPaper ? paperPositions : positions,
+        paperBalance: isPaper ? paperBalance : config.paperBalance,
       })
     });
     console.log('Pushed cloud health log & positions to Cloudflare D1 successfully.');

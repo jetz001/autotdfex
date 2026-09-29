@@ -59,6 +59,9 @@ export function FuturesPageClient() {
   const [realAccount, setRealAccount] = React.useState<RealFuturesAccount | null>(null)
   const [loadingReal, setLoadingReal] = React.useState(false)
   const [quantLogs, setQuantLogs] = React.useState<QuantLog[]>(() => loadQuantLogs(config.isPaperTrading ?? true))
+  const [autoScanCountdown, setAutoScanCountdown] = React.useState(30)
+  const isScanningRef = React.useRef(false)
+  isScanningRef.current = isScanning
 
   // Refresh real Bitget account balance
   const refreshRealAccount = React.useCallback(async (cfg?: FuturesConfig) => {
@@ -293,14 +296,15 @@ export function FuturesPageClient() {
   }
 
   // Scan & Trade loop (Auto-Ranked by Quant Multi-Factor Engine)
-  const handleScanAndTrade = async () => {
+  const handleScanAndTrade = React.useCallback(async (isAuto = false) => {
+    if (isScanningRef.current) return
     setIsScanning(true)
     try {
       const isPaper = config.isPaperTrading ?? true
       const currentPositions = loadFuturesPositions(isPaper)
       const currentTickers = tickers.length > 0 ? tickers : await fetchTopBitgetFuturesTickers()
       if (currentTickers.length === 0) {
-        setActionAlert("⚠️ ไม่สามารถโหลดข้อมูลตลาด Futures ได้")
+        if (!isAuto) setActionAlert("⚠️ ไม่สามารถโหลดข้อมูลตลาด Futures ได้")
         return
       }
 
@@ -309,7 +313,7 @@ export function FuturesPageClient() {
       const deployable = balance - reserveUsdt
 
       if (deployable < 10) {
-        setActionAlert(`⚠️ ทุนคงเหลือ $${deployable.toFixed(2)} USDT ต่ำกว่าขั้นต่ำ (10 USDT)`)
+        if (!isAuto) setActionAlert(`⚠️ ทุนคงเหลือ $${deployable.toFixed(2)} USDT ต่ำกว่าขั้นต่ำ (10 USDT)`)
         return
       }
 
@@ -438,12 +442,33 @@ export function FuturesPageClient() {
       }
 
       if (!executed) {
-        setActionAlert(holdReason ? `🔍 ${holdReason}` : "🔍 สแกนเสร็จ — ไม่พบสัญญาณ Long/Short ที่ผ่านเกณฑ์ Quant ในขณะนี้")
+        if (!isAuto) {
+          setActionAlert(holdReason ? `🔍 ${holdReason}` : "🔍 สแกนเสร็จ — ไม่พบสัญญาณ Long/Short ที่ผ่านเกณฑ์ Quant ในขณะนี้")
+        }
       }
     } finally {
       setIsScanning(false)
     }
-  }
+  }, [config, tickers, realAccount, refreshRealAccount])
+
+  // Auto-Pilot periodic scan & trade loop (every 30s)
+  React.useEffect(() => {
+    if (!config.autoPilotEnabled) return
+
+    const timer = setInterval(() => {
+      setAutoScanCountdown((prev) => {
+        if (prev <= 1) {
+          if (!isScanningRef.current) {
+            handleScanAndTrade(true)
+          }
+          return 30
+        }
+        return prev - 1
+      })
+    }, 1000)
+
+    return () => clearInterval(timer)
+  }, [config.autoPilotEnabled, handleScanAndTrade])
 
 
   // Manual Open Position
@@ -549,19 +574,31 @@ export function FuturesPageClient() {
         </div>
 
         <div className="flex items-center gap-2">
+          {config.autoPilotEnabled && (
+            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-xs text-emerald-400 shadow-sm animate-in fade-in">
+              <span className="relative flex h-2 w-2">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+              </span>
+              <span className="text-[11px] font-medium">
+                Auto-Pilot: {autoScanCountdown}s
+              </span>
+            </div>
+          )}
+
           <Button
             variant="outline"
             size="sm"
-            className="h-8 gap-1.5 text-xs border-violet-500/30 hover:border-violet-500/60"
-            onClick={handleScanAndTrade}
+            className="h-8 gap-1.5 text-xs border-violet-500/30 hover:border-violet-500/60 bg-violet-500/5 hover:bg-violet-500/15"
+            onClick={() => handleScanAndTrade(false)}
             disabled={isScanning}
           >
             {isScanning ? (
-              <RefreshCw className="size-3.5 animate-spin" />
+              <RefreshCw className="size-3.5 animate-spin text-violet-400" />
             ) : (
               <Search className="size-3.5 text-violet-400" />
             )}
-            {isScanning ? "กำลังสแกนตลาด..." : "Scan & Trade"}
+            {isScanning ? "กำลังสแกนตลาด..." : "Scan Now"}
           </Button>
 
           <Button
