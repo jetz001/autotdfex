@@ -256,6 +256,7 @@ async function runFuturesCycle() {
   if (ACTION_INPUT === 'cycle') {
     const STABLECOINS = ['USDC', 'USDGO', 'FDUSD', 'USDE', 'DAI', 'TUSD', 'EUR', 'BUSD'];
     const REAL_R_CRYPTO = ['RENDERUSDT', 'ROSEUSDT', 'RUNEUSDT', 'RAYUSDT', 'REQUSDT'];
+    const STOCKS_AND_COMMODITIES = ['NVDAUSDT', 'AAPLUSDT', 'TSLAUSDT', 'AMZNUSDT', 'MSFTUSDT', 'GOOGUSDT', 'COINUSDT', 'METAUSDT', 'XAUUSDT', 'XAGUSDT'];
     const heldSymbols = new Set(positions.map(p => `${p.symbol}_${p.positionSide}`));
     const longCount = positions.filter(p => p.positionSide === 'long').length;
     const shortCount = positions.filter(p => p.positionSide === 'short').length;
@@ -266,6 +267,7 @@ async function runFuturesCycle() {
         const sym = item.symbol;
         if (sym.includes('_')) return false;
         if (sym.startsWith('R') && !REAL_R_CRYPTO.includes(sym)) return false;
+        if (STOCKS_AND_COMMODITIES.includes(sym)) return false;
         const base = sym.replace('USDT', '');
         if (STABLECOINS.includes(base)) return false;
         const vol = parseFloat(item.usdtVolume || item.quoteVolume || '0');
